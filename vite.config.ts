@@ -16,7 +16,7 @@ export default defineConfig({
   worker: { format: 'es' },
   build: {
     // 하네스 전용 빌드는 따로 둔다 — 앱(런처 번들)이 읽는 dist를 스크린샷 빌드가 덮어쓰지 않게
-    outDir: harnessOnly ? '../dist-harness' : '../dist',
+    outDir: harnessOnly ? '../' + (process.env.HARNESS_OUT ?? 'dist-harness') : '../dist',
     emptyOutDir: true,
     target: 'es2022',
     rollupOptions: {

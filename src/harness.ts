@@ -1,19 +1,22 @@
 import * as T from 'three'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { createNavy } from './model'
 import { PRESETS, PRESET_NAMES, applyOverrides, isPreset } from './harness/presets'
 import { createReactions } from './reactions'
 const q=new URLSearchParams(location.search),canvas=document.getElementById('stage') as HTMLCanvasElement
 const r=new T.WebGLRenderer({canvas,antialias:true,alpha:true,preserveDrawingBuffer:true});r.setSize(innerWidth,innerHeight);r.setPixelRatio(1);r.toneMapping=T.NeutralToneMapping
 const scene=new T.Scene();scene.background=new T.Color('#'+(q.get('bg')??'f1eee9'))
-const avatar=createNavy();scene.add(avatar.root)
+scene.environment=new T.PMREMGenerator(r).fromScene(new RoomEnvironment(),.04).texture;scene.environmentIntensity=.35
+const avatar=createNavy();scene.add(avatar.root);await avatar.ready
 const reactions=createReactions();reactions.fxRoot.scale.setScalar(.8);reactions.fxRoot.position.y=.98;scene.add(reactions.fxRoot)
 const cam=new T.PerspectiveCamera(17,innerWidth/innerHeight,.1,100)
 function pose(name:string,orbit=0){
  const frame=applyOverrides(PRESETS[isPreset(name)?name:'idle'](),q)
  for(let i=0;i<40;i++)avatar.apply(frame,1/60,i/60)
  if(q.has('reaction')){reactions.trigger(Number(q.get('reaction')),0);for(let i=0;i<90;i++)avatar.apply(reactions.compose(PRESETS.idle(),1/60,i/60),1/60,i/60)}
- const dist=Math.max(2.99,2.8/cam.aspect)/(2*Math.tan(T.MathUtils.degToRad(8.5)))/(Number(q.get('zoom'))||1)
- const a=orbit*Math.PI/180;cam.position.set(Math.sin(a)*dist,1.35,Math.cos(a)*dist);cam.lookAt(0,1.35,0);cam.updateProjectionMatrix()
+ const dist=Math.max(3.5,3.3/cam.aspect)/(2*Math.tan(T.MathUtils.degToRad(8.5)))/(Number(q.get('zoom'))||1)
+ const ty=Number(q.get('ty')??1.5),el=Number(q.get('elev')??4)*Math.PI/180
+ const a=orbit*Math.PI/180;cam.position.set(Math.sin(a)*Math.cos(el)*dist,ty+Math.sin(el)*dist,Math.cos(a)*Math.cos(el)*dist);cam.lookAt(0,ty,0);cam.updateProjectionMatrix()
 }
 if(q.has('sheet')){
  const names=q.get('sheet')==='1'?PRESET_NAMES:q.get('sheet')!.split(',');const cols=Number(q.get('cols'))||3,rows=Math.ceil(names.length/cols),w=innerWidth/cols,h=innerHeight/rows

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import { createNavy } from './model/index'
 import { createTracker } from './tracking/index'
 import { createCameraSession } from './camera'
@@ -106,6 +107,9 @@ const renderStats = { frames: 0, triangles: 0, drawCalls: 0, frameErrors: 0 }
 // 좁은 FOV(준직교) — 2D 일러처럼 읽히게 원근 왜곡을 줄인다
 const camera = new THREE.PerspectiveCamera(17, 1, 0.1, 100)
 
+// 클레이 질감용 은은한 환경광 (반사·시앤이 살아나게)
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture
+scene.environmentIntensity = 0.35
 const avatar = createNavy()
 scene.add(avatar.root)
 // 숫자키 리액션: 트래킹 → 미러 → aliveness → 리액션 → 모델. FX(하트·꽃·색종이 …)는 씬에 따로 얹는다
