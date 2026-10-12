@@ -64,6 +64,15 @@ def build_scene(only=None):
             failed.append(name)
             print(f'[navy] FAIL {name}')
             traceback.print_exc()
+    # 마무리 단계 (materials.finish): 모든 부위가 만들어진 뒤 굽기 등. 무거운 일은 NAVY_BAKE=1 일 때만 한다
+    if hasattr(materials, 'finish'):
+        try:
+            materials.finish(ctx)
+            print('[navy] ok materials.finish')
+        except Exception:
+            failed.append('materials.finish')
+            print('[navy] FAIL materials.finish')
+            traceback.print_exc()
     common.deselect_all()
     common.update()
     return ctx, failed
