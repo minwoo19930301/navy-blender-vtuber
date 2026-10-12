@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>Navy Blender VTuber</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Segoe UI", "Malgun Gothic", sans-serif; }
+    body.bg-green { background: #00ff00; }
+    body.bg-solid { background: #20232b; }
+    /* Retina에서 setSize(updateStyle=false)면 캔버스가 버퍼 픽셀(2×)로 커진다 → CSS로 창에 맞춤 */
+    canvas#stage { display: block; width: 100vw; height: 100vh; }
+    /* 평소엔 화면 밖. 디버그 오버레이를 켜면 거울 미리보기로 보인다 */
+    video#cam { position: fixed; left: -9999px; top: 0; width: 2px; height: 2px; opacity: 0; }
+    body.debug video#cam {
+      left: 10px; top: 10px; width: 160px; height: 120px; opacity: 0.85;
+      transform: scaleX(-1); border-radius: 8px; z-index: 40;
+    }
+    #debug {
+      position: fixed; left: 10px; top: 136px; z-index: 40; display: none;
+      padding: 8px 10px; border-radius: 8px; background: rgba(10, 12, 20, 0.78); color: #e9ecff;
+      font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Malgun Gothic", monospace; white-space: pre; pointer-events: none;
+    }
+    body.debug #debug { display: block; }
+    #toast {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 50;
+      padding: 6px 12px; border-radius: 16px; background: rgba(10, 12, 20, 0.8); color: #fff;
+      font-size: 12px; font-weight: 600; opacity: 0; transition: opacity 0.25s ease; pointer-events: none;
+      /* 한 줄이면 그대로 알약 모양. 카메라 안내처럼 긴 문구는 창 너비 안에서 줄바꿈 */
+      width: max-content; max-width: calc(100vw - 32px); text-align: center; line-height: 1.45;
+    }
+    #toast.show { opacity: 1; }
+    #camera-toggle { position:fixed; bottom:12px; right:12px; padding:7px 12px; border:1px solid #ffffff30; border-radius:18px; background:#18253edb; color:#edf1fa; font:11px -apple-system; cursor:pointer; opacity:.35; z-index:60; }
+    #camera-toggle:hover { opacity:1; }
+  </style>
+</head>
+<body>
+  <video id="cam" playsinline muted></video>
+  <canvas id="stage"></canvas>
+  <div id="debug"></div>
+  <div id="toast"></div>
+  <button id="camera-toggle">카메라 연결 중…</button>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

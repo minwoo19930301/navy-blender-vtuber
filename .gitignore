@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+shots/
+.claude/worktrees/
+
+# postinstall이 node_modules/@mediapipe/tasks-vision/wasm 에서 복사한다
+public/wasm/
+
+# E2E 배우 VRM 사본과 생성 영상
+scripts/e2e/actor/actor.vrm
+scripts/e2e/.cache/
+
+# macOS 앱 번들 (npm run pack)
+release/
+dist-harness/
