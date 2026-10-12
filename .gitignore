@@ -21,3 +21,11 @@ dist-*/
 public/wip/
 blender/__pycache__/
 blender/parts/__pycache__/
+
+# TRELLIS 생성물 (큰 파일). 최종 모델만 public/ 으로 옮겨 커밋한다
+trellis/*.glb
+trellis/*.obj
+trellis/*.npz
+trellis/*basecolor.png
+trellis/look-*.png
+trellis/*.log
