@@ -15,3 +15,9 @@ scripts/e2e/.cache/
 # macOS 앱 번들 (npm run pack)
 release/
 dist-harness/
+
+# 에이전트별 하네스 빌드·작업용 GLB
+dist-*/
+public/wip/
+blender/__pycache__/
+blender/parts/__pycache__/
