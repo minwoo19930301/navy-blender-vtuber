@@ -4,13 +4,13 @@
  * - 헤드폰은 모델 앵커 headTop(머리 뼈 프레임, 월드 축 정렬)의 자식이라 고개를 그대로 따른다. glb 노드 원점이 headTop 자리다.
  * - 노트북은 씬(fxRoot 의 부모)에 얹는다. fxRoot 는 공 캐릭터용 배율·높이가 걸려 있어서 자식으로 두지 않는다.
  * - 헤드폰·노트북은 평소(idle)에 보이지 않는다. 리액션 레이어 10 이 살아 있는 동안만 보이고, 등장·퇴장은 tl 만의 순수 함수라 시각을 건너뛰어도 같은 모습이다.
- * - 책상('desk')과 키보드('keyboard')는 idle 에도 항상 보인다. 책상 윗면이 밑단·바지를 가리고 손이 얹히는 자리가 된다.
- *   일하는 척 동안은 책상이 나무색으로 물들고 키보드는 노트북에 자리를 내주고 줄어 사라진다.
+ * - 책상('desk')은 idle 에 깊이만 쓰는 투명 가림판이다: 밑단·바지를 가리지만 투명 오버레이에서는 안 보인다.
+ *   일하는 척 동안만 나무 책상이 서서히 나타난다. 키보드('keyboard')는 idle 에 보이고, 일하는 척 동안 노트북에 자리를 내주고 줄어 사라진다.
  * - 모델·씬은 엔진이 모른다: 처음 update 때 fxRoot.parent 에서 'anchor_headTop' 을 이름으로 찾아 붙인다 (아직 없으면 다음 프레임에 다시).
  */
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { DESK_IDLE_COLOR, DESK_WORK_COLOR, KEYBOARD_IDLE, PROP_CUES, PROP_WORK_LID_OPEN, POP_IN, POP_OUT, PropId, WORK_LAPTOP } from './propdefs'
+import { DESK_WORK_COLOR, KEYBOARD_IDLE, PROP_CUES, PROP_WORK_LID_OPEN, POP_IN, POP_OUT, PropId, WORK_LAPTOP } from './propdefs'
 import { easeOutBack, ss } from './util'
 
 /** props.glb 에서 헤드폰 노드의 원점(머리 꼭대기)에서 머리 한가운데(귀 높이)까지 내려간 거리 — 팝이 머리 한가운데를 기준으로 커진다 */
@@ -63,7 +63,6 @@ export function createWorkProps(fxRoot: THREE.Object3D): WorkProps {
   kbRoot.name = 'work_keyboard'
   kbRoot.visible = false
   let deskMat: THREE.MeshStandardMaterial | null = null
-  const colIdle = new THREE.Color(DESK_IDLE_COLOR)
   const colWork = new THREE.Color(DESK_WORK_COLOR)
   let attachedDesk = false
   const lidOpenQ = new THREE.Quaternion()
@@ -96,7 +95,16 @@ export function createWorkProps(fxRoot: THREE.Object3D): WorkProps {
           const m = o as THREE.Mesh
           if (m.isMesh) deskMat = m.material as THREE.MeshStandardMaterial
         })
-        deskMat?.color.copy(colIdle)
+        deskMat?.color.copy(colWork)
+        if (deskMat) { deskMat.transparent = true; deskMat.opacity = 0; deskMat.depthWrite = false }
+        // 가림판: 같은 모양, 색은 안 쓰고 깊이만 쓴다 → 아래 몸(밑단·바지)이 가려지되 배경은 투명하게 남는다
+        const occ = deskSrc.clone(true)
+        occ.name = 'desk_occluder'
+        occ.traverse((o) => {
+          const m = o as THREE.Mesh
+          if (m.isMesh) { m.material = new THREE.MeshBasicMaterial({ colorWrite: false }); m.renderOrder = -1 }
+        })
+        deskRoot.add(occ)
       }
       if (kbSrc) {
         kbSrc.removeFromParent()
@@ -193,7 +201,11 @@ export function createWorkProps(fxRoot: THREE.Object3D): WorkProps {
         }
         work = Math.min(1, ls)
       }
-      if (deskMat) deskMat.color.copy(colIdle).lerp(colWork, work)
+      if (deskMat) {
+        // 일하는 척 동안만 나무 책상이 보인다 (idle 은 투명 가림판만)
+        deskMat.opacity = work
+        deskMat.depthWrite = work > 0.98
+      }
       const ks = 1 - ss(0, 0.8, work)
       kbRoot.visible = attachedDesk && ks > 0.002
       if (kbRoot.visible) kbRoot.scale.setScalar(ks)
