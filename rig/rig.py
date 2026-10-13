@@ -139,6 +139,10 @@ bm.from_mesh(body.data)
 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4 * S)
 cut = bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=(0, 0, -0.02), plane_no=(0, 0, 1), clear_inner=True)
 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+# 열린 가장자리(앞섶·깃·소매 끝)의 가시 조각을 깎고 톱니를 편다 (rig/edgeclean.py)
+import edgeclean  # noqa: E402
+_n_spk, _n_rel = edgeclean.clean_edges(bm)
+log(f'edge clean: spikes removed {_n_spk}, boundary verts relaxed {_n_rel}')
 bm.to_mesh(body.data)
 bm.free()
 n0 = len(body.data.polygons)
@@ -468,8 +472,9 @@ for tag in ('L', 'R'):
 body.data.update()
 
 
-def drop_stray_skin(z_max):
-    """깃 아래 몸 메시에 남은 피부색 조각(잘린 생성 손의 잔해·안쪽 껍질)이 소매·재킷 밖으로 비친다 → 지운다.
+def recolor_stray_skin(z_max):
+    """깃 아래 몸 메시의 피부색 면(잘린 생성 손의 잔해·소매 속 껍질)을 재킷 남색으로 칠한다.
+    지우면 구멍이 나서 안쪽 껍질이 비친다 → 지우지 않고, 그 면들의 UV 를 텍스처의 깨끗한 남색 한 점으로 모은다.
     재질마다 자기 텍스처에서 색을 읽는다 (머리 이식 모델은 재질이 둘이다). 새 손은 이 뒤에 붙으니 영향이 없다."""
     me = body.data
     imgs = {}
@@ -482,26 +487,37 @@ def drop_stray_skin(z_max):
                 imgs[mi] = (px.reshape(h, w, 4), w, h)
                 break
     uv = me.uv_layers.active.data
-    dead = []
+    skin, navy = [], []
     for poly in me.polygons:
-        if poly.center.z > z_max or poly.material_index not in imgs:
+        if poly.material_index not in imgs:
             continue
         arr, w, h = imgs[poly.material_index]
-        u = sum(uv[i].uv[0] for i in poly.loop_indices) / poly.loop_total % 1.0
-        v = sum(uv[i].uv[1] for i in poly.loop_indices) / poly.loop_total % 1.0
-        r, g, b_ = arr[min(h - 1, int(v * h)), min(w - 1, int(u * w)), :3]
-        if r > 0.45 and r - b_ > 0.12:
-            dead.append(poly.index)
-    bm_ = bmesh.new()
-    bm_.from_mesh(me)
-    bm_.faces.ensure_lookup_table()
-    bmesh.ops.delete(bm_, geom=[bm_.faces[i] for i in dead], context='FACES')
-    bm_.to_mesh(me)
-    bm_.free()
-    log(f'stray skin faces removed below z={z_max:.2f}: {len(dead)}')
+        u = sum(uv[i].uv[0] for i in poly.loop_indices) / poly.loop_total
+        v = sum(uv[i].uv[1] for i in poly.loop_indices) / poly.loop_total
+        r, g, b_ = arr[min(h - 1, int(v % 1.0 * h)), min(w - 1, int(u % 1.0 * w)), :3]
+        if poly.center.z < z_max and r > 0.45 and r - b_ > 0.12:
+            skin.append(poly)
+        elif b_ - r > 0.05 and max(r, g, b_) < 0.35 and poly.center.z < z_max:
+            navy.append((poly.material_index, (u, v), (r, g, b_)))
+    if not skin or not navy:
+        log('stray skin recolor: nothing to do')
+        return
+    # 남색 기준점: 남색 면 색의 중앙값에 가장 가까운 면의 UV (같은 재질 안에서)
+    med = np.median(np.array([c for _, _, c in navy]), axis=0)
+    by_mat = {}
+    for mi, (u, v), c in navy:
+        d = float(np.sum((np.array(c) - med) ** 2))
+        if mi not in by_mat or d < by_mat[mi][0]:
+            by_mat[mi] = (d, (u, v))
+    any_uv = min(by_mat.values())[1]
+    for poly in skin:
+        tu, tv = by_mat.get(poly.material_index, (0, any_uv))[1]
+        for i in poly.loop_indices:
+            uv[i].uv = (tu, tv)
+    log(f'stray skin faces recolored navy below z={z_max:.2f}: {len(skin)} (navy ref rgb {np.round(med, 3)})')
 
 
-drop_stray_skin(J['neck'].z - 0.12)
+recolor_stray_skin(J['neck'].z - 0.12)
 bm = bmesh.new()
 bm.from_mesh(body.data)
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')

@@ -6,6 +6,9 @@ import * as T from 'three'
  */
 export function createBodyMaterial(src: T.Material): T.Material {
   const s = src as T.MeshStandardMaterial
+  // 확인용: ?side=front|double (면 방향 실험)
+  const sideQ = new URLSearchParams(location.search).get('side')
+  const side = sideQ === 'front' ? T.FrontSide : T.DoubleSide
   // 확인용: ?unlit=1 이면 구운 색 그대로 (조명 영향 없이 텍스처 색을 본다)
   if (new URLSearchParams(location.search).get('unlit') === '1') {
     const u = new T.MeshBasicMaterial({ map: s.map ?? null, side: T.DoubleSide })
@@ -18,7 +21,7 @@ export function createBodyMaterial(src: T.Material): T.Material {
     color: 0xffffff,
     roughness: 0.82,
     metalness: 0,
-    side: T.DoubleSide,
+    side,
   })
   if (m.map) {
     m.map.colorSpace = T.SRGBColorSpace

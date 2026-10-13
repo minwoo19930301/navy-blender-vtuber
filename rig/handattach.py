@@ -108,6 +108,9 @@ def set_skin(obj, rgb):
         nt.links.new(tex.outputs['Color'], bsdf.inputs['Base Color'])
 
 
+WRIST_KEEP = 0.07  # 손바닥 밑에서 남길 손목 길이 (세운 손 좌표, 손 길이 1 기준)
+
+
 def trim_wrist(obj, z_cut=-0.49, iters=3):
     """손목 자른 면(뚜껑)을 지우고 열린 가장자리 고리를 라플라시안으로 3번 다듬는다 (세운 손 좌표, 자른 면 z≈-0.5)"""
     import bmesh
@@ -168,7 +171,9 @@ def load_and_place(hand_dir, J, cuff_info, palm_len=None, log=print):
     for side, tag in ((1, 'L'), (-1, 'R')):
         obj = _import_mesh(hand_dir / 'hand_R.glb', stand)
         if stand:
-            trim_wrist(obj)
+            # 손목 그루터기를 손바닥 밑(관절 0)에서 조금만 남기고 자른다. 길게 두면 손이 아래팔과 각을 이룰 때
+            # 그루터기가 소매 옆구리를 뚫고 나와 분홍 조각으로 보인다
+            trim_wrist(obj, z_cut=float(pts0[0][2]) - WRIST_KEEP)
         obj.name = f'navy_hand_{tag}'
         obj.data.name = f'navy_hand_{tag}'
         pts, n = pts0.copy(), n0.copy()
