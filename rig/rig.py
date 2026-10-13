@@ -631,12 +631,56 @@ def recolor_clothes(z_max, mat_index=0):
             me.materials.append(m_)
         return [x.name for x in me.materials].index(name)
     i_navy, i_white = flat('jacket_navy', mn_), flat('shirt_white', mw_)
-    shirt = front & (np.abs(ctr[:, 0]) < hz - 0.02) & ~skin
-    jacket = ~(front & (np.abs(ctr[:, 0]) < hz)) & ~skin
+    # 셔츠 띠 안 = 흰색, 나머지(피부 빼고) = 남색. 사이 띠를 원래 텍스처로 두면 흰 실밥처럼 보인다
+    # 셔츠 띠 안은 면 방향과 상관없이 흰색 (재킷 가장자리에서 옆으로 삐친 조각이 셔츠 위에 남색 실밥처럼 보인다)
+    front_half = ctr[:, 1] < yc
+    shirt = front_half & (np.abs(ctr[:, 0]) < hz - 0.01) & ~skin
+    jacket = ~shirt & ~skin
+    # 경계 다듬기: 이웃 면의 다수결로 외딴 섬(남색 속 흰 점, 흰색 속 남색 점)을 없앤다
+    lab = np.where(shirt, 1, np.where(jacket, 0, -1))
+    pid = {p_.index: i for i, p_ in enumerate(polys)}
+    nbrs = [[] for _ in polys]
+    e2f = {}
+    for i, p_ in enumerate(polys):
+        for ek in p_.edge_keys:
+            e2f.setdefault(ek, []).append(i)
+    for fs in e2f.values():
+        for a_ in fs:
+            for b_ in fs:
+                if a_ != b_:
+                    nbrs[a_].append(b_)
+    for _ in range(3):
+        new = lab.copy()
+        for i in range(len(polys)):
+            if lab[i] < 0 or not nbrs[i]:
+                continue
+            v_ = [lab[j] for j in nbrs[i] if lab[j] >= 0]
+            if v_ and sum(v_) * 2 > len(v_) and lab[i] == 0 and sum(v_) == len(v_):
+                new[i] = 1
+            elif v_ and sum(v_) == 0 and lab[i] == 1:
+                new[i] = 0
+        lab = new
+    shirt, jacket = lab == 1, lab == 0
     for idx in np.where(shirt)[0]:
         polys[idx].material_index = i_white
     for idx in np.where(jacket)[0]:
         polys[idx].material_index = i_navy
+    # 라펠 가장자리 펴기: 재킷 면의 정점이 셔츠 띠 안(|x| < 셔츠 반폭)으로 들어와 있으면 셔츠 경계선(|x| = 반폭)으로 밀어낸다.
+    # 재킷 가장자리가 가시처럼 셔츠 위로 삐친 조각이 경계선 하나로 깔끔하게 정리된다 (몸 앞쪽 절반, 셔츠 띠가 잰 높이만)
+    zlo, zhi = zb[ok].min(), zb[ok].max()
+    Vco = np.array([v.co[:] for v in me.vertices])
+    jv = set()
+    for i in np.where(jacket)[0]:
+        jv.update(polys[i].vertices)
+    jv = np.array(sorted(jv))
+    vx, vy, vz = Vco[jv, 0], Vco[jv, 1], Vco[jv, 2]
+    vh = np.interp(vz, zb, half)
+    vyc = np.interp(vz, zb, np.array([np.median(ctr[np.abs(ctr[:, 2] - z0) < 0.05, 1]) if (np.abs(ctr[:, 2] - z0) < 0.05).any() else 0 for z0 in zb]))
+    mv = (vz > zlo) & (vz < zhi) & (vy < vyc) & (np.abs(vx) < vh) & (np.abs(vx) > 0.3 * vh)
+    for k_, vi in enumerate(jv[mv]):
+        x_ = Vco[vi, 0]
+        me.vertices[vi].co.x = np.sign(x_) * vh[mv][k_]
+    log(f'clothes: snapped {int(mv.sum())} lapel verts to the shirt edge')
     log(f'clothes: {int(jacket.sum())} faces → flat navy {np.round(mn_, 3)}, {int(shirt.sum())} → flat white {np.round(mw_, 3)}')
 
 

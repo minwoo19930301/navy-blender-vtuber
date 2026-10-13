@@ -255,21 +255,48 @@ def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
         gaps = np.nonzero(np.diff(zs) > 0.01)[0]
         top = zs[gaps[0]] if len(gaps) else zs[-1]
     zcap = top + 0.006
-    tree = KDTree(len(spos))   # 거울 x, 높이 z 로 찾는다 (y=0 평면)
-    for i, p_ in enumerate(spos):
-        tree.insert(Vector((2 * cx - p_[0], 0.0, p_[2])), i)
-    tree.balance()
+    # 거울 위치의 src 표면 점을 BVH 로 찾아 그 삼각형의 UV 를 무게중심 보간하고 텍스처를 이중선형으로 읽는다
+    # (가장 가까운 텍셀 하나를 가져오면 가장자리가 계단지고 점이 튄다)
+    from mathutils.bvhtree import BVHTree
+    from mathutils.geometry import barycentric_transform
+    tris_s = [t for t in me.loop_triangles if t.material_index == smi
+              and ((V[list(t.vertices)].mean(0)[0] - src_c.x) / (rx * 1.7)) ** 2 + ((V[list(t.vertices)].mean(0)[2] - src_c.z) / (rz * 1.7)) ** 2 < 1.0]
+    tv = [[Vector(V[i]) for i in t.vertices] for t in tris_s]
+    tuv = [[Vector((uvd[li].uv[0], uvd[li].uv[1], 0.0)) for li in t.loops] for t in tris_s]
+    verts_flat = [v for tri in tv for v in tri]
+    bvh = BVHTree.FromPolygons(verts_flat, [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(tv))])
+    sh, sw = sarr.shape[0], sarr.shape[1]
+
+    def bilinear(u, v):
+        x = (u % 1.0) * sw - 0.5
+        y = (v % 1.0) * sh - 0.5
+        x0, y0 = int(np.floor(x)), int(np.floor(y))
+        fx, fy = x - x0, y - y0
+        x0c, x1c = min(max(x0, 0), sw - 1), min(max(x0 + 1, 0), sw - 1)
+        y0c, y1c = min(max(y0, 0), sh - 1), min(max(y0 + 1, 0), sh - 1)
+        c = (sarr[y0c, x0c, :3] * (1 - fx) * (1 - fy) + sarr[y0c, x1c, :3] * fx * (1 - fy)
+             + sarr[y1c, x0c, :3] * (1 - fx) * fy + sarr[y1c, x1c, :3] * fx * fy)
+        return c
     n = 0
     for mi, (pos, pix) in dst.items():
         arr = imgs[mi][0].copy()
-        q = [tree.find(Vector((p_[0], 0.0, p_[2]))) for p_ in pos]
-        j = np.array([x[1] for x in q])
-        d = np.array([x[2] for x in q])
         cur = arr[pix[:, 0], pix[:, 1], :3]
-        src_c_ = scol[j]
-        # 둘 다 피부인 곳은 그대로 (섞을 필요가 없어 경계 자국이 안 생긴다). 눈썹 높이(zcap) 위는 안 건드린다
-        sel = (d < 0.02) & (pos[:, 2] < zcap) & ~(skin(cur) & skin(src_c_))
-        arr[pix[sel, 0], pix[sel, 1], :3] = src_c_[sel]
+        new = np.empty_like(cur)
+        okm = np.zeros(len(pos), bool)
+        for i, p_ in enumerate(pos):
+            if p_[2] >= zcap:
+                continue
+            hit = bvh.find_nearest(Vector((2 * cx - p_[0], p_[1], p_[2])), 0.03)
+            if hit[0] is None:
+                continue
+            ti = hit[2]
+            a3, b3, c3 = tv[ti]
+            uvp = barycentric_transform(hit[0], a3, b3, c3, tuv[ti][0], tuv[ti][1], tuv[ti][2])
+            new[i] = bilinear(uvp[0], uvp[1])
+            okm[i] = True
+        # 둘 다 피부인 곳은 그대로 (경계 자국이 안 생긴다). 눈썹 높이(zcap) 위는 안 건드린다
+        sel = okm & ~(skin(cur) & skin(new))
+        arr[pix[sel, 0], pix[sel, 1], :3] = new[sel]
         n += int(sel.sum())
         m = me.materials[mi]
         node = next(nd for nd in m.node_tree.nodes if nd.type == 'TEX_IMAGE' and nd.image and any(l.to_socket.name == 'Base Color' for l in nd.outputs['Color'].links))
