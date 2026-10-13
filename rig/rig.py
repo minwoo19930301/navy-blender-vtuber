@@ -287,7 +287,7 @@ if '--baked-face' not in argv:
 # ───────────────────────── 3-1. 3D 입 (rig/mouth.py): 구운 입선을 따라 가르고 턱 뼈로 연다
 import mouth as MO  # noqa: E402
 MOUTH = None
-JAW_DROP = 0.06   # 입을 다 벌렸을 때 아래 입술이 내려가는 거리 (앱 단위, 입 폭 ≈ 0.3)
+JAW_DROP = 0.12   # 입을 다 벌렸을 때 아래 입술이 내려가는 거리 (앱 단위, 입 폭 ≈ 0.3)
 if '--baked-face' in argv and F:
     _cl, _cr = joint(*F[291][:2], depth_bias=0.5), joint(*F[61][:2], depth_bias=0.5)
     _mc, _mw = (_cl + _cr) / 2, (_cl - _cr).length
@@ -605,15 +605,27 @@ def recolor_clothes(z_max, mat_index=0):
         return uvs_c[j], med
     (uw, mw_), (un, mn_) = ref(white), ref(navy)
     skin = (r_ > 0.45) & (r_ - b_ > 0.12)
-    to_white = front & (np.abs(ctr[:, 0]) < hz - 0.02) & ~white & ~skin
-    to_navy = ~in_shirt & ~navy
-    for idx in np.where(to_white)[0]:
-        for i in polys[idx].loop_indices:
-            uv[i].uv = uw
-    for idx in np.where(to_navy)[0]:
-        for i in polys[idx].loop_indices:
-            uv[i].uv = un
-    log(f'clothes recolor: {int(to_navy.sum())} faces → navy {np.round(mn_, 3)}, {int(to_white.sum())} → white {np.round(mw_, 3)}')
+    # 면 가운데 색만 바꾸면 면 안쪽에 남은 흰 얼룩(생성 텍스처 노이즈)이 그대로 보인다 → 재킷·셔츠는 텍스처 없는 단색 재질로 바꾼다.
+    # 주름 음영은 조명이 만든다. 셔츠 띠 안 = 흰색, 그 밖 = 남색 (피부는 그대로)
+    def flat(name, srgb):
+        m_ = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+        m_.use_nodes = True
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb]
+        bs = m_.node_tree.nodes['Principled BSDF']
+        bs.inputs['Base Color'].default_value = (*lin, 1)
+        bs.inputs['Roughness'].default_value = 0.85
+        m_.use_backface_culling = False
+        if name not in [x.name for x in me.materials]:
+            me.materials.append(m_)
+        return [x.name for x in me.materials].index(name)
+    i_navy, i_white = flat('jacket_navy', mn_), flat('shirt_white', mw_)
+    shirt = front & (np.abs(ctr[:, 0]) < hz - 0.02) & ~skin
+    jacket = ~(front & (np.abs(ctr[:, 0]) < hz)) & ~skin
+    for idx in np.where(shirt)[0]:
+        polys[idx].material_index = i_white
+    for idx in np.where(jacket)[0]:
+        polys[idx].material_index = i_navy
+    log(f'clothes: {int(jacket.sum())} faces → flat navy {np.round(mn_, 3)}, {int(shirt.sum())} → flat white {np.round(mw_, 3)}')
 
 
 recolor_clothes(J['neck'].z - 0.1)
