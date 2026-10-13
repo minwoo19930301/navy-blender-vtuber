@@ -83,6 +83,8 @@ function viewMenuItems() {
     { label: '배경: 투명 / 크로마키 그린 / 단색', accelerator: 'CommandOrControl+Shift+B', click: () => sendDebug('bg-cycle') },
     { label: '좌우 미러 반전 (팔이 반대로 움직일 때)', accelerator: 'CommandOrControl+Shift+X', click: () => sendDebug('mirror-toggle') },
     { label: '트래킹 디버그 오버레이', accelerator: 'CommandOrControl+Shift+D', click: () => sendDebug('debug-toggle') },
+    { type: 'separator' },
+    { label: '카메라 켜기/끄기', accelerator: 'CommandOrControl+Shift+C', click: () => sendDebug('camera-toggle') },
   ]
 }
 

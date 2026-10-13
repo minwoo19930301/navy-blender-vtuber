@@ -29,7 +29,8 @@
       width: max-content; max-width: calc(100vw - 32px); text-align: center; line-height: 1.45;
     }
     #toast.show { opacity: 1; }
-    #camera-toggle { position:fixed; bottom:12px; right:12px; padding:7px 12px; border:1px solid #ffffff30; border-radius:18px; background:#18253edb; color:#edf1fa; font:11px -apple-system; cursor:pointer; opacity:.35; z-index:60; }
+    /* 화면 버튼은 숨긴다 (메뉴 '카메라 켜기/끄기'·⌘⇧C 로 바꾼다) */
+    #camera-toggle { display:none !important; position:fixed; bottom:12px; right:12px; padding:7px 12px; border:1px solid #ffffff30; border-radius:18px; background:#18253edb; color:#edf1fa; font:11px -apple-system; cursor:pointer; opacity:.35; z-index:60; }
     #camera-toggle:hover { opacity:1; }
   </style>
 </head>

@@ -162,6 +162,7 @@ function handleCommand(cmd: string) {
   else if (cmd === 'debug-toggle') toggleDebug()
   else if (cmd === 'quit') window.mingo?.quit()
   else if (cmd === 'reaction-cancel') reactions.cancel(elapsed)
+  else if (cmd === 'camera-toggle') toggleCamera()
   else if (cmd.startsWith('reaction-')) reactions.trigger(Number(cmd.slice('reaction-'.length)), elapsed)
 }
 window.mingo?.onDebugCommand?.(handleCommand)
@@ -211,13 +212,15 @@ const cameraSession = createCameraSession({
     camError = error ? (error instanceof Error ? error.message : String(error)) : ''
     cameraButton.textContent = state==='starting' ? '연결 중…' : state==='tracking' ? '카메라 끄기' : state==='error' ? '다시 연결' : '카메라 켜기'
     if(state==='tracking') console.log('[navy] tracking started')
-    if(state==='error') toast('카메라 연결을 확인하고 다시 연결을 눌러 주세요. '+camError,6000)
+    if(state==='error') toast('카메라 연결을 확인하고 메뉴의 카메라 켜기/끄기(⌘⇧C)로 다시 연결해 주세요. '+camError,6000)
   },
 })
-cameraButton.addEventListener('click',()=>{
+function toggleCamera() {
   cameraEnabled = camError ? true : !cameraEnabled
   cameraSession.setActive(cameraEnabled && cameraVisible)
-})
+  toast(cameraEnabled ? '카메라 켜는 중…' : '카메라 껐어요 (⌘⇧C 로 다시 켜기)', 1800)
+}
+cameraButton.addEventListener('click', toggleCamera)
 cameraButton.addEventListener('pointerdown',e=>e.stopPropagation())
 cameraButton.addEventListener('mousedown',e=>e.stopPropagation())
 cameraSession.setActive(cameraEnabled)
