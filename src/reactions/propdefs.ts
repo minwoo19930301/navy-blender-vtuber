@@ -12,14 +12,16 @@ export const PropId = {
   nightcap: 5,
   hat: 6,
   gift: 7,
+  headphones: 8,
+  laptop: 9,
 } as const
 export type PropIdValue = (typeof PropId)[keyof typeof PropId]
-export const PROP_COUNT = 8
+export const PROP_COUNT = 10
 
 /** 리액션 시각 `in`..`out`(초) 동안 소품이 보인다. 앞뒤로 팝(overshoot)과 줄어들며 사라지는 구간이 있다 */
 export interface PropCue {
   prop: PropIdValue
-  /** 소품이 속한 리액션 번호 (1..9) */
+  /** 소품이 속한 리액션 번호 (1..10) */
   reaction: number
   in: number
   out: number
@@ -38,6 +40,9 @@ export const PROP_CUES: readonly PropCue[] = [
   { prop: PropId.nightcap, reaction: 8, in: 0.12, out: 2.7 },
   { prop: PropId.hat, reaction: 9, in: 0.08, out: 2.7 },
   { prop: PropId.gift, reaction: 9, in: 1.0, out: 2.7 },
+  // 일하는 척 (dur 5.0): 헤드폰을 먼저 쓰고 노트북이 따라 펼쳐진다. 퇴장은 엔진의 마지막 0.35초 페이드보다 먼저 끝난다
+  { prop: PropId.headphones, reaction: 10, in: 0.1, out: 4.35 },
+  { prop: PropId.laptop, reaction: 10, in: 0.3, out: 4.45 },
 ]
 
 /* ---------------- 시각 상수 (타임라인과 소품이 같이 쓴다) ---------------- */
@@ -50,3 +55,16 @@ export const HORN_BLOW_LEN = 0.42
 export const HAT_LANDS: readonly number[] = [0.9, 1.6]
 /** 선물 상자 뚜껑이 팡 열리는 시각 (색종이 세 번째 터짐과 같다) */
 export const GIFT_POP = 1.2
+
+/* ---------------- 일하는 척 (노트북 자리·뚜껑) ---------------- */
+
+/** 노트북 밑판 바닥 가운데의 월드 위치, 배율, y 회전(rad). 앞(+Z, 키보드쪽)이 캐릭터를 향하게 π 에서 시작한다. y 는 책상 윗면(blender/props_export.py DESK_TOP) */
+export const WORK_LAPTOP = { x: 0.55, y: 0.28, z: 0.85, yaw: Math.PI + 0.8, scale: 0.82 }
+/** 노트북이 등장한 뒤 뚜껑이 다 열리기까지(초) */
+export const PROP_WORK_LID_OPEN = 0.65
+
+/** idle 키보드 자리 (책상 윗면 위, 오른쪽 앞, yaw -15°) */
+export const KEYBOARD_IDLE = { x: 0.95, y: 0.28, z: 0.95, yaw: -Math.PI / 12 }
+/** 책상 색: idle 은 배경에 가까운 밝은 색, 일하는 척 동안은 나무색 (레퍼런스 working-2) */
+export const DESK_IDLE_COLOR = 0xf3f1ef
+export const DESK_WORK_COLOR = 0x907358

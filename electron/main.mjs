@@ -41,10 +41,15 @@ function toggleVisible() {
   if (win) win.isVisible() ? win.hide() : win.show()
 }
 
-/** 숫자키 리액션 (렌더러 src/reactions 의 id 와 같다). 단축키는 Ctrl+Option(맥)/Ctrl+Alt(Windows)+숫자 — 다른 앱에 포커스가 있어도 먹는 전역 단축키다 */
+/**
+ * 숫자키 리액션 [id, 이름, 숫자키] (id 는 렌더러 src/reactions 와 같다). 단축키는 Ctrl+Option(맥)/Ctrl+Alt(Windows)+숫자 — 다른 앱에 포커스가 있어도 먹는 전역 단축키다.
+ * 10번 '일하는 척' 은 자판의 0 키다. 취소는 Ctrl+Alt+Esc (렌더러 창에 포커스가 있으면 Esc 만으로도 된다)
+ */
 const REACTIONS = [
-  [1, '웃음'], [2, '사랑'], [3, '인사'], [4, '놀람'], [5, '감동'], [6, '뽀뽀'], [7, '화남'], [8, '졸림'], [9, '축하'],
+  [1, '웃음', '1'], [2, '사랑', '2'], [3, '인사', '3'], [4, '놀람', '4'], [5, '감동', '5'], [6, '뽀뽀', '6'], [7, '화남', '7'], [8, '졸림', '8'], [9, '축하', '9'],
+  [10, '일하는 척', '0'],
 ]
+const CANCEL_KEY = 'Control+Alt+Escape'
 
 function sendReaction(cmd) {
   // 숨겨진 동안(카메라·렌더 루프 정지)에는 보내지 않는다 — 다시 보일 때 옛 리액션이 갑자기 재생되지 않게
@@ -57,14 +62,14 @@ function sendReaction(cmd) {
  */
 function reactionMenuItems() {
   return [
-    ...REACTIONS.map(([n, name]) => ({
-      label: `${n}  ${name}`,
-      accelerator: `Control+Alt+${n}`, // Alt == Option (맥) — 한 표기로 두 OS에서 같은 키
+    ...REACTIONS.map(([n, name, key]) => ({
+      label: `${key}  ${name}`,
+      accelerator: `Control+Alt+${key}`, // Alt == Option (맥) — 한 표기로 두 OS에서 같은 키
       registerAccelerator: false,
       click: () => sendReaction(`reaction-${n}`),
     })),
     { type: 'separator' },
-    { label: '리액션 취소', accelerator: 'Control+Alt+0', registerAccelerator: false, click: () => sendReaction('reaction-cancel') },
+    { label: '리액션 취소', accelerator: CANCEL_KEY, registerAccelerator: false, click: () => sendReaction('reaction-cancel') },
   ]
 }
 
@@ -273,12 +278,12 @@ app.whenReady().then(async () => {
   // 방송 화면공유 대비 퀵 하이드 (setContentProtection은 macOS 15+에서 무력)
   globalShortcut.register('CommandOrControl+Shift+M', toggleVisible)
 
-  // 숫자키 리액션: Ctrl+Option(Alt)+1..9 재생, +0 취소 (전역 — 다른 앱을 쓰는 중에도 먹는다)
+  // 숫자키 리액션: Ctrl+Option(Alt)+1..9, 0(일하는 척) 재생, +Esc 취소 (전역 — 다른 앱을 쓰는 중에도 먹는다)
   const taken = []
-  for (const [n] of REACTIONS) {
-    if (!globalShortcut.register(`Control+Alt+${n}`, () => sendReaction(`reaction-${n}`))) taken.push(`Ctrl+${ALT_NAME}+${n}`)
+  for (const [n, , key] of REACTIONS) {
+    if (!globalShortcut.register(`Control+Alt+${key}`, () => sendReaction(`reaction-${n}`))) taken.push(`Ctrl+${ALT_NAME}+${key}`)
   }
-  if (!globalShortcut.register('Control+Alt+0', () => sendReaction('reaction-cancel'))) taken.push(`Ctrl+${ALT_NAME}+0`)
+  if (!globalShortcut.register(CANCEL_KEY, () => sendReaction('reaction-cancel'))) taken.push(`Ctrl+${ALT_NAME}+Esc`)
   if (taken.length > 0) console.warn(`[navy] 전역 단축키를 못 잡았습니다 (다른 앱이 쓰는 중): ${taken.join(', ')}`)
 })
 

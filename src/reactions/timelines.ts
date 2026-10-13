@@ -596,4 +596,53 @@ const celebrate: Spec = {
   ],
 }
 
-export const SPECS: readonly Spec[] = [laugh, love, greet, surprise, touched, kiss, angry, sleepy, celebrate]
+/* ---------------- 10 일하는 척 (0 키) ---------------- */
+
+const WORK_DUR = 5.0
+
+const working: Spec = {
+  id: 10,
+  name: '일하는 척',
+  dur: WORK_DUR,
+  // 헤드폰을 쓰고 노트북이 펼쳐진 뒤 한창 타이핑하는 순간
+  peak: 2.4,
+  eval(tl, tg) {
+    // 자세 진입(0.5초)과 마무리(끝나기 전 0.9초): 이 안에서 몸·고개·팔이 노트북 쪽으로 돌아갔다가 돌아온다
+    const k = ss(0.05, 0.6, tl) * (1 - ss(WORK_DUR - 1.0, WORK_DUR - 0.4, tl))
+    // 눈을 감은 채(blink 0.95 = 감은 ∪ 속눈썹) 은은한 미소로 건반을 친다 (working-2 레퍼런스)
+    tg.gazeX = 0.12 * k
+    tg.gazeY = -0.55 * k
+    tg.blink = 0.95 * k
+    tg.mouthOpen = 0
+    tg.mouthSmile = 0.3 + 0.3 * k
+    // 고개: 아래로 숙이고 노트북 쪽(캐릭터 왼쪽)으로 돌린다. 타이핑 리듬으로 아주 조금 끄덕인다
+    const type = ss(0.5, 0.9, tl) * (1 - ss(WORK_DUR - 1.0, WORK_DUR - 0.5, tl))
+    tg.headPitch = -0.17 * k + 0.012 * type * Math.sin(TAU * 3.1 * tl)
+    tg.headYaw = 0.0 * k
+    tg.headRoll = -0.03 * k + 0.012 * type * Math.sin(TAU * 0.9 * tl)
+    // 캐릭터 전체를 노트북 쪽(자기 왼쪽)으로 3/4 만큼 돌리고(레퍼런스 구도), 상체를 조금 더 튼다
+    tg.spin = 0.45 * k
+    tg.twist = 0.2 * k
+    tg.leanZ = 0.09 * k
+    tg.squash = -0.01 * k
+    // 팔: 양손이 키보드 위로. 손목은 위아래로 톡톡, 손가락은 엇갈려 눌린다 (구간마다 세기가 오르내려 쉬었다 치는 느낌)
+    const burst = 0.6 + 0.4 * Math.sin(TAU * 0.55 * tl + 0.8)
+    for (let si = 0; si < 2; si++) {
+      const i = SIDES[si]
+      armSet(tg, i, k, G.type)
+      const a = tg.arms[i]
+      const ph = i * 2.1
+      const bob = Math.sin(TAU * 6.4 * tl + ph)
+      nudge(tg, i, 'hand', 0, 0.06 * bob * type * burst, 0)
+      nudge(tg, i, 'lower', 0, 0.02 * Math.sin(TAU * 3.2 * tl + ph + 1) * type * burst, 0)
+      for (let n = 0; n < 5; n++) {
+        // 손가락마다 다른 주파수·위상의 눌림 (한 번 눌릴 때 0..1 로 올랐다 내려온다)
+        const f = Math.max(0, Math.sin(TAU * (5.2 + 0.7 * n) * tl + ph * 1.3 + n * 1.9))
+        a.fingers[n] = Math.min(1, a.fingers[n] + 0.38 * f * f * type * burst)
+      }
+    }
+  },
+  events: [],
+}
+
+export const SPECS: readonly Spec[] = [laugh, love, greet, surprise, touched, kiss, angry, sleepy, celebrate, working]

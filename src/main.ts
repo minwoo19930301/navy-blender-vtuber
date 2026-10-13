@@ -1,6 +1,5 @@
 import * as THREE from 'three'
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
-import { createNavy } from './model/index'
+import { createNavy, applyEnvironment } from './model/index'
 import { createTracker } from './tracking/index'
 import { createCameraSession } from './camera'
 import { createAliveness } from './aliveness/index'
@@ -96,8 +95,6 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'low-power',
 })
 renderer.setClearColor(0x000000, 0) // 완전 투명 배경 (배경색은 body CSS가 담당)
-// Neutral tone mapping keeps skin and dark clothing readable.
-renderer.toneMapping = THREE.NeutralToneMapping
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
 
 const scene = new THREE.Scene()
@@ -107,9 +104,8 @@ const renderStats = { frames: 0, triangles: 0, drawCalls: 0, frameErrors: 0 }
 // 좁은 FOV(준직교) — 2D 일러처럼 읽히게 원근 왜곡을 줄인다
 const camera = new THREE.PerspectiveCamera(17, 1, 0.1, 100)
 
-// 클레이 질감용 은은한 환경광 (반사·시앤이 살아나게)
-scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture
-scene.environmentIntensity = 0.35
+// 환경광·톤매핑은 하네스와 같게 model/index.ts 한 곳에서 건다
+applyEnvironment(renderer, scene)
 const avatar = createNavy()
 scene.add(avatar.root)
 // 숫자키 리액션: 트래킹 → 미러 → aliveness → 리액션 → 모델. FX(하트·꽃·색종이 …)는 씬에 따로 얹는다
@@ -166,11 +162,12 @@ function handleCommand(cmd: string) {
 }
 window.mingo?.onDebugCommand?.(handleCommand)
 
-/** 숫자키 1~9 → 리액션 번호 (자판 배열과 무관하게 e.code 로 읽고, 없으면 e.key). 아니면 0 */
+/** 숫자키 1~9 → 리액션 1~9, 0 → 리액션 10(일하는 척) (자판 배열과 무관하게 e.code 로 읽고, 없으면 e.key). 숫자키가 아니면 0 */
 function reactionKey(e: KeyboardEvent): number {
-  const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code)
-  if (m) return Number(m[1])
-  return /^[1-9]$/.test(e.key) ? Number(e.key) : 0
+  const m = /^(?:Digit|Numpad)([0-9])$/.exec(e.code)
+  const d = m ? m[1] : /^[0-9]$/.test(e.key) ? e.key : ''
+  if (d === '') return 0
+  return d === '0' ? 10 : Number(d)
 }
 
 // 브라우저 실행(npm run web / OBS 브라우저 소스)용 단축키 — Electron에서는 메뉴·전역 단축키가 담당 (창에 포커스가 있을 때는 숫자키도 바로 먹는다)
@@ -181,7 +178,7 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) handleCommand(`reaction-${rk}`) // 꾹 눌러도 한 번만 (반복 입력이 리액션을 계속 처음으로 되돌리지 않게)
     return
   }
-  if (e.key === 'Escape' || e.key === '0') {
+  if (e.key === 'Escape') {
     handleCommand('reaction-cancel')
     return
   }

@@ -1,5 +1,5 @@
 /**
- * 리액션 엔진 — 숫자키 1~9 로 재생하는 결정적 타임라인 (docs/REACTIONS.md).
+ * 리액션 엔진 — 숫자키 1~9, 0(=10 일하는 척)으로 재생하는 결정적 타임라인 (docs/REACTIONS.md).
  *
  * 파이프라인에서의 자리: tracking → mirror → aliveness → **reactions** → model.apply.
  * 트래킹은 리액션 아래에서 계속 살아 있고, 엔벨로프가 0 으로 돌아가면 부드럽게 다시 넘겨받는다.
@@ -14,6 +14,7 @@ import * as THREE from 'three'
 import { neutralMotion, type ArmPose, type BodyMotion, type RigFrame } from '../contract'
 import { mulberry32 } from '../aliveness/rng'
 import { createFx, type Fx } from './fx'
+import { createWorkProps } from './props'
 import { SPECS } from './timelines'
 import { createTarget, resetTarget, type ArmTarget, type Spec, type Target } from './types'
 import { slerpInto, ss } from './util'
@@ -33,7 +34,7 @@ export interface LayerView {
 }
 
 export interface Reactions {
-  /** id 1..9 재생 시작 (이미 재생 중이면 처음부터 다시, 다른 번호면 교차). t = 현재 시각(초) */
+  /** id 1..10 재생 시작 (이미 재생 중이면 처음부터 다시, 다른 번호면 교차). t = 현재 시각(초) */
   trigger(id: number, t: number): void
   /** 재생 중인 리액션을 모두 접는다 (0.3초에 걸쳐 사라진다) */
   cancel(t: number): void
@@ -47,6 +48,8 @@ export interface Reactions {
   active(): number | null
   /** 리액션이 아직 화면에 영향을 주고 있으면 true (나가는 중인 레이어와 떠 있는 FX 포함). 렌더 루프가 프레임 상한을 올리는 데 쓴다 */
   busy(): boolean
+  /** 소품 에셋(props.glb) 로드 완료 (하네스가 기다린다) */
+  ready: Promise<void>
   /** 모든 리액션 명세 (메뉴·하네스 시트용) */
   specs: readonly Spec[]
   dispose(): void
@@ -63,6 +66,11 @@ const CANCEL_SEC = 0.3
 const FLAG_ON = 0.35
 const FLAG_OFF = 0.12
 const LAYERS = 3
+/**
+ * 하네스 전용 시각 오프셋(초): ?rt=2.4 이면 트리거 직후의 타임라인 시각이 2.4 초부터 시작한다.
+ * 하네스는 고정 90프레임(1.5초)만 돌리므로, 긴 리액션의 뒷부분을 한 장에 찍으려고 쓴다. 앱에서는 쿼리가 없어 0 이다
+ */
+const RT_OFFSET = typeof location !== 'undefined' ? Number(new URLSearchParams(location.search).get('rt')) || 0 : 0
 
 interface Layer {
   spec: Spec | null
@@ -82,6 +90,7 @@ const mix = (a: number, b: number, w: number): number => a + (b - a) * w
 
 export function createReactions(): Reactions {
   const fx: Fx = createFx()
+  const props = createWorkProps(fx.root)
   const layers: Layer[] = []
   for (let i = 0; i < LAYERS; i++) {
     layers.push({ spec: null, t0: 0, raw: 0, target: 0, outSec: OUT_SEC, ev: 0, rng: mulberry32(1), seq: 0 })
@@ -123,6 +132,7 @@ export function createReactions(): Reactions {
 
   return {
     fxRoot: fx.root,
+    ready: props.ready,
     layers: views,
     specs: SPECS,
 
@@ -147,7 +157,7 @@ export function createReactions(): Reactions {
       }
       triggers++
       slot.spec = spec
-      slot.t0 = t
+      slot.t0 = t - RT_OFFSET
       slot.raw = 0
       slot.target = 1
       slot.outSec = OUT_SEC
@@ -257,6 +267,7 @@ export function createReactions(): Reactions {
         }
       }
       fx.update(t)
+      props.update(views)
       return frame
     },
 
@@ -276,6 +287,7 @@ export function createReactions(): Reactions {
     },
 
     dispose() {
+      props.dispose()
       fx.dispose()
     },
   }
