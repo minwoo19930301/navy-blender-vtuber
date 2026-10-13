@@ -24,7 +24,8 @@ export interface IdleOut {
 }
 
 type Motion = 'TILT' | 'STRETCH' | 'SHRUG' | 'HAPPY' | 'REACH'
-const MOTIONS: readonly Motion[] = ['TILT', 'STRETCH', 'SHRUG', 'HAPPY', 'REACH']
+// REACH(팔 앞으로 뻗었다 내리기)는 뜬금없어 보여 고르지 않는다 (사용자 요청). 코드는 리액션용으로 남긴다
+const MOTIONS: readonly Motion[] = ['TILT', 'STRETCH', 'SHRUG', 'HAPPY']
 
 /** 목 스트레치 키프레임: 위로 0.3 → 아래로 -0.1 → 복귀 */
 const STRETCH_KEYS: readonly (readonly [number, number])[] = [
