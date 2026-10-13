@@ -29,3 +29,6 @@ trellis/*.npz
 trellis/*basecolor.png
 trellis/look-*.png
 trellis/*.log
+
+__pycache__/
+rig/hand/*_trellis.glb
