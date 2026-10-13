@@ -4,6 +4,8 @@ import type { RigFrame } from '../contract'
 /** public/navy-rig.json (rig/CONTRACT.md) */
 export interface NavyRig {
   height: number
+  /** 얼굴이 텍스처에 잘 구워져 있으면 true (머리 이식 모델). 평소엔 아무것도 덧그리지 않는다 */
+  bakedFace?: boolean
   joints: Record<string, [number, number, number]>
   face: {
     eyeL?: { center: [number, number, number]; width: number; height: number }
@@ -459,7 +461,7 @@ function drawOpenEye(g: CanvasRenderingContext2D, eye: EyeShape, gaze: number, a
 }
 
 /** 눈꺼풀 폴리곤 + 속눈썹 선. 눈 장축 좌표계(s: 가로, t: 위) */
-function drawEye(p: Patch, eye: EyeShape, st: EyeState, debug: boolean) {
+function drawEye(p: Patch, eye: EyeShape, st: EyeState, debug: boolean, baked = false) {
   const g = p.begin()
   g.save()
   g.rotate(eye.th)
@@ -479,7 +481,8 @@ function drawEye(p: Patch, eye: EyeShape, st: EyeState, debug: boolean) {
   const grad = g.createConicGradient(0, 0, 0) // 눈 둘레 피부색을 각도별로 이어 붙인다
   for (let i = 0; i <= RING_N; i++) grad.addColorStop(i / RING_N, css(eye.ring[i % RING_N]!))
   g.fillStyle = grad
-  const open = eye.found && L < 0.97
+  // 구운 얼굴이면 뜬 눈은 구운 눈 그대로 둔다 (덮개·새 눈을 안 그린다). 눈꺼풀만 내려온다
+  const open = !baked && eye.found && L < 0.97
   if (open) {
     // 1) 구운 눈 + 회분홍 테두리를 피부색 덮개로 묻는다
     g.beginPath(); g.ellipse(0, 0, A, B, 0, 0, Math.PI * 2); g.fill()
@@ -657,13 +660,27 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
   // 몸 메시 찾기 (head 의 조상 꼭대기에서 SkinnedMesh)
   let top: T.Object3D = head
   while (top.parent) top = top.parent
-  let body: T.SkinnedMesh | null = null
+  // 머리를 이식한 모델은 재질이 둘(몸·머리)이라 navy_body 가 여러 SkinnedMesh 로 갈라져 온다.
+  // 얼굴은 그중 턱 위 정점이 가장 많은 메시에 있다
+  const chinY = rig.joints.head?.[1] ?? -Infinity
+  const vtmp = new T.Vector3()
+  let body: T.SkinnedMesh | null = null, bestCount = -1
+  top.updateWorldMatrix(false, true)
   top.traverse(o => {
     const m = o as T.SkinnedMesh
-    if (m.isSkinnedMesh && (!body || m.name === 'navy_body')) body = m
+    if (!m.isSkinnedMesh || m.name.startsWith('navy_hand')) return
+    const pos = m.geometry.getAttribute('position')
+    let count = 0
+    for (let i = 0; i < pos.count; i += 7) {
+      m.getVertexPosition(i, vtmp)
+      vtmp.applyMatrix4(m.matrixWorld)
+      if (vtmp.y > chinY) count++
+    }
+    if (count > bestCount) { bestCount = count; body = m }
   })
   const bodyMesh = body as T.SkinnedMesh | null
   const eyeLd = rig.face.eyeL, eyeRd = rig.face.eyeR, mouthD = rig.face.mouth
+  const baked = !!rig.bakedFace
   if (!bodyMesh || !eyeLd || !eyeRd || !mouthD) return noop
 
   let hf: Heightfield, toLocal: T.Matrix4
@@ -753,9 +770,9 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
         const kk = `${q(lid, 40)}|${q(archFx, 20)}|${q(heart, 20)}|${q(gazeS, 60)}`
         if (kk === key.v) continue
         key.v = kk
-        const vis = e.found || lid > 0.012 || heart > 0.01 || debug
+        const vis = (!baked && e.found) || lid > 0.012 || heart > 0.01 || debug
         p.mesh.visible = vis
-        if (vis) drawEye(p, e, s, debug)
+        if (vis) drawEye(p, e, s, debug, baked)
       }
       // 입
       const surprised = !!fx.surprised
@@ -767,7 +784,8 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       kissS += ((fx.kiss ? 1 : 0) - kissS) * (1 - Math.exp(-dt * 20))
       const noKiss = 1 - smooth(0.2, 0.6, kissS)
       const alpha = smooth(0.06, 0.1, openS) * noKiss
-      const rest = (1 - smooth(0.05, 0.09, openS)) * noKiss
+      // 구운 얼굴은 닫힌 입(미소)도 텍스처에 있다 → 쉬는 입은 안 그린다
+      const rest = baked ? 0 : (1 - smooth(0.05, 0.09, openS)) * noKiss
       const mk = `${q(openS, 64)}|${q(smileS, 40)}|${q(kissS, 20)}|${q(alpha, 20)}|${q(rest, 20)}`
       if (mk !== keyM.v) {
         keyM.v = mk
@@ -781,7 +799,7 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       // 볼터치
       const b = clamp(fx.blush ?? 0, 0, 1)
       // 평소에도 연한 볼터치(기본 0.3), fx.blush 가 켜지면 진해진다
-      const bo = Math.min(1, Math.max(b, 0.3) * 1.2)
+      const bo = Math.min(1, Math.max(b, baked ? 0 : 0.3) * 1.2)
       for (const p of [blushL, blushR]) {
         const m = p.mesh.material as T.MeshStandardMaterial
         if (Math.abs(m.opacity - bo) > 0.004) m.opacity = bo
