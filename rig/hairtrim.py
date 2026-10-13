@@ -234,8 +234,8 @@ def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
             lst[1].append(np.stack([gy[ins], gx[ins]], 1))
         return {k: (np.concatenate(a), np.concatenate(b)) for k, (a, b) in out.items() if a}
 
-    src = texels(src_c, 1.25)
-    dst = texels(dst_c, 1.0)
+    src = texels(src_c, 1.6)
+    dst = texels(dst_c, 1.35)
     if not src or not dst:
         log('mirror eye: texels not found')
         return
@@ -243,6 +243,18 @@ def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
     spos, spix = src[smi]
     sarr = imgs[smi][0]
     scol = sarr[spix[:, 0], spix[:, 1], :3]
+
+    def skin(c):
+        return (c[:, 0] > 0.55) & (c[:, 0] - c[:, 2] > 0.06) & (c[:, 1] > 0.4)
+    # 눈 위쪽 끝(속눈썹 선 꼭대기): src 눈 가운데 열에서 눈 중심부터 위로 올라가며 눈 아닌(피부) 텍셀만 나오는 첫 높이. 그 위(눈썹)는 안 건드린다
+    col_ = (np.abs(spos[:, 0] - src_c.x) < rx * 0.5)
+    ne = col_ & ~skin(scol)
+    zs = np.sort(spos[ne, 2][spos[ne, 2] > src_c.z])
+    top = src_c.z + rz * 0.6
+    if len(zs):
+        gaps = np.nonzero(np.diff(zs) > 0.01)[0]
+        top = zs[gaps[0]] if len(gaps) else zs[-1]
+    zcap = top + 0.006
     tree = KDTree(len(spos))   # 거울 x, 높이 z 로 찾는다 (y=0 평면)
     for i, p_ in enumerate(spos):
         tree.insert(Vector((2 * cx - p_[0], 0.0, p_[2])), i)
@@ -253,12 +265,12 @@ def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
         q = [tree.find(Vector((p_[0], 0.0, p_[2]))) for p_ in pos]
         j = np.array([x[1] for x in q])
         d = np.array([x[2] for x in q])
-        r = np.sqrt(((pos[:, 0] - dst_c.x) / rx) ** 2 + ((pos[:, 2] - dst_c.z) / rz) ** 2)
-        k = np.clip((1.0 - r) / 0.15, 0, 1)[:, None]
-        ok = d < 0.02
-        cur = arr[pix[ok, 0], pix[ok, 1], :3]
-        arr[pix[ok, 0], pix[ok, 1], :3] = cur * (1 - k[ok]) + scol[j[ok]] * k[ok]
-        n += int(ok.sum())
+        cur = arr[pix[:, 0], pix[:, 1], :3]
+        src_c_ = scol[j]
+        # 둘 다 피부인 곳은 그대로 (섞을 필요가 없어 경계 자국이 안 생긴다). 눈썹 높이(zcap) 위는 안 건드린다
+        sel = (d < 0.02) & (pos[:, 2] < zcap) & ~(skin(cur) & skin(src_c_))
+        arr[pix[sel, 0], pix[sel, 1], :3] = src_c_[sel]
+        n += int(sel.sum())
         m = me.materials[mi]
         node = next(nd for nd in m.node_tree.nodes if nd.type == 'TEX_IMAGE' and nd.image and any(l.to_socket.name == 'Base Color' for l in nd.outputs['Color'].links))
         img = bpy.data.images.new(node.image.name + '_eye', arr.shape[1], arr.shape[0], alpha=True)
@@ -266,4 +278,5 @@ def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
         img.pack()
         node.image = img
         imgs[mi] = (arr, arr.shape[1], arr.shape[0])
+    log(f'mirror eye: eye top z={top:.3f} (center {src_c.z:.3f})')
     log(f'mirror eye: copied {n} texels (face center x={cx:+.3f})')
