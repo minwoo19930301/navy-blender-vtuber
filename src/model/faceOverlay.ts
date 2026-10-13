@@ -6,6 +6,10 @@ export interface NavyRig {
   height: number
   /** 얼굴이 텍스처에 잘 구워져 있으면 true (머리 이식 모델). 평소엔 아무것도 덧그리지 않는다 */
   bakedFace?: boolean
+  /** 3D 입(턱 뼈 jaw)이 있으면 true */
+  jaw?: boolean
+  /** 턱 최대 벌림 각 (rad) */
+  jawMax?: number | null
   joints: Record<string, [number, number, number]>
   face: {
     eyeL?: { center: [number, number, number]; width: number; height: number }
@@ -798,7 +802,8 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       smileS += (clamp(smileT, -1, 1) - smileS) * km
       kissS += ((fx.kiss ? 1 : 0) - kissS) * (1 - Math.exp(-dt * 20))
       const noKiss = 1 - smooth(0.2, 0.6, kissS)
-      const alpha = smooth(0.06, 0.1, openS) * noKiss
+      // 3D 입(턱 뼈)이 있으면 벌린 입은 메시가 연다 → 2D 로 그리지 않는다
+      const alpha = rig.jaw ? 0 : smooth(0.06, 0.1, openS) * noKiss
       // 구운 얼굴은 닫힌 입(미소)도 텍스처에 있다 → 쉬는 입은 안 그린다
       const rest = baked ? 0 : (1 - smooth(0.05, 0.09, openS)) * noKiss
       const mk = `${q(openS, 64)}|${q(smileS, 40)}|${q(kissS, 20)}|${q(alpha, 20)}|${q(rest, 20)}`

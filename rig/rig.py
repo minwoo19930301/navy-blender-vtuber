@@ -280,7 +280,25 @@ def coords():
     return a.reshape(-1, 3).astype(np.float64)
 
 
-soften_nose()
+# 머리 이식 모델(--baked-face)의 코는 이미 작고, headswap.py 에서 살짝 뾰족하게 다듬었다 → 줄이지 않는다
+if '--baked-face' not in argv:
+    soften_nose()
+
+# ───────────────────────── 3-1. 3D 입 (rig/mouth.py): 구운 입선을 따라 가르고 턱 뼈로 연다
+import mouth as MO  # noqa: E402
+MOUTH = None
+JAW_DROP = 0.06   # 입을 다 벌렸을 때 아래 입술이 내려가는 거리 (앱 단위, 입 폭 ≈ 0.3)
+if '--baked-face' in argv and F:
+    _cl, _cr = joint(*F[291][:2], depth_bias=0.5), joint(*F[61][:2], depth_bias=0.5)
+    _mc, _mw = (_cl + _cr) / 2, (_cl - _cr).length
+    _near = min(body.data.polygons, key=lambda p_: (p_.center - _mc).length)
+    _mi = _near.material_index
+    MO.remove_inner_behind_mouth(body, _mc, _mw, log)
+    _lip = (joint(*F[13][:2], depth_bias=0.5) + joint(*F[14][:2], depth_bias=0.5)) / 2
+    # 만화 얼굴이라 입꼬리 랜드마크가 구운 미소 선과 어긋난다 → 텍스처에서 미소 선을 찾아 쓴다 (못 찾으면 랜드마크)
+    _found = MO.smile_curve_from_texture(body, _mc, _mw, _mi, log)
+    _curve, _xr = MO.rip(body, _cl, _cr, _lip, _mc, _mw, log, found=_found)
+    MOUTH = dict(curve=_curve, xr=_xr, center=_mc, mw=_mw, chin_z=joint(*F[152][:2], depth_bias=0.5).z)
 bvh = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
 
 # ───────────────────────── 3a. 소매 중심선으로 팔 관절 다듬기
@@ -518,6 +536,87 @@ def recolor_stray_skin(z_max):
 
 
 recolor_stray_skin(J['neck'].z - 0.12)
+
+
+def recolor_clothes(z_max, mat_index=0):
+    """재킷·셔츠를 영역으로 다시 칠한다 (누더기 같은 흰 줄·남색 얼룩 정리).
+    재킷은 거의 한 가지 남색이라, 앞쪽 가운데 셔츠 띠(높이마다 흰색이 우세한 x 폭) 안은 흰색, 그 밖은 남색으로 정한다.
+    해당 면의 UV 를 텍스처의 깨끗한 흰 점·남 점으로 모은다. 몸 재질(mat_index)·깃 아래만 바꾼다 (얼굴·목은 머리 재질이라 안 건드린다)."""
+    me = body.data
+    m = me.materials[mat_index]
+    img = next(n.image for n in m.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image)
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    arr = px.reshape(h, w, 4)[:, :, :3]
+    uv = me.uv_layers.active.data
+    polys = [p_ for p_ in me.polygons if p_.material_index == mat_index and p_.center.z < z_max]
+    cols, uvs_c = [], []
+    for p_ in polys:
+        u = sum(uv[i].uv[0] for i in p_.loop_indices) / p_.loop_total
+        v = sum(uv[i].uv[1] for i in p_.loop_indices) / p_.loop_total
+        cols.append(arr[min(h - 1, int(v % 1.0 * h)), min(w - 1, int(u % 1.0 * w))])
+        uvs_c.append((u, v))
+    cols = np.array(cols)
+    ctr = np.array([p_.center[:] for p_ in polys])
+    nrm = np.array([p_.normal[:] for p_ in polys])
+    r_, g_, b_ = cols[:, 0], cols[:, 1], cols[:, 2]
+    white = (r_ > 0.7) & (g_ > 0.7) & (b_ > 0.65)
+    navy = (b_ - r_ > 0.04) & (np.maximum(np.maximum(r_, g_), b_) < 0.4)
+    # 정면 판정: 이 메시는 면 방향이 다 맞지는 않아 법선 대신 위치로 본다 — 같은 높이 몸 단면의 앞쪽 절반(-Y)이고 법선이 옆을 향하지 않는 면
+    yc = np.empty(len(ctr))
+    for z0 in np.arange(ctr[:, 2].min(), z_max + 0.1, 0.1):
+        sel = np.abs(ctr[:, 2] - z0) < 0.05
+        if sel.any():
+            yc[sel] = np.median(ctr[sel & (np.abs(ctr[:, 0]) < 0.5), 1]) if (sel & (np.abs(ctr[:, 0]) < 0.5)).any() else np.median(ctr[sel, 1])
+    front = (ctr[:, 1] < yc) & (np.abs(nrm[:, 1]) > 0.35)
+    # 높이마다 셔츠 반폭: 정면 흰 면의 |x| 80 번째 백분위 (위아래로 매끈하게)
+    zb = np.arange(ctr[:, 2].min(), z_max + 0.05, 0.05)
+    half = np.full(len(zb), np.nan)
+    xb = np.arange(0.0, 0.5, 0.02)
+    for i, z0 in enumerate(zb):
+        band = front & (np.abs(ctr[:, 2] - z0) < 0.05)
+        ax = np.abs(ctr[band, 0])
+        wb = white[band]
+        mid = ax < 0.06
+        if band.sum() < 40 or not mid.any() or wb[mid].mean() < 0.5:
+            continue
+        # 가운데부터 바깥으로: 흰 면 비율이 절반 아래로 떨어지는 첫 칸이 셔츠 끝 (재킷 위 흰 줄에 덜 휘둘린다)
+        edge = None
+        for x0 in xb:
+            sel = (ax >= x0) & (ax < x0 + 0.02)
+            if sel.sum() >= 5 and wb[sel].mean() < 0.5:
+                edge = x0
+                break
+        if edge is not None:
+            half[i] = edge
+    ok = ~np.isnan(half)
+    if ok.sum() < 3:
+        log('clothes recolor: shirt band not found, skipped')
+        return
+    half = np.interp(zb, zb[ok], half[ok])
+    half = np.convolve(np.pad(half, 2, mode='edge'), np.ones(5) / 5, mode='valid')
+    hz = np.interp(ctr[:, 2], zb, half)
+    in_shirt = front & (np.abs(ctr[:, 0]) < hz)
+    # 기준 텍셀: 흰색·남색 각각 중앙값에 가장 가까운 면의 UV
+    def ref(mask):
+        med = np.median(cols[mask], axis=0)
+        j = np.argmin(np.sum((cols - med) ** 2, axis=1) + (~mask) * 1e9)
+        return uvs_c[j], med
+    (uw, mw_), (un, mn_) = ref(white), ref(navy)
+    skin = (r_ > 0.45) & (r_ - b_ > 0.12)
+    to_white = front & (np.abs(ctr[:, 0]) < hz - 0.02) & ~white & ~skin
+    to_navy = ~in_shirt & ~navy
+    for idx in np.where(to_white)[0]:
+        for i in polys[idx].loop_indices:
+            uv[i].uv = uw
+    for idx in np.where(to_navy)[0]:
+        for i in polys[idx].loop_indices:
+            uv[i].uv = un
+    log(f'clothes recolor: {int(to_navy.sum())} faces → navy {np.round(mn_, 3)}, {int(to_white.sum())} → white {np.round(mw_, 3)}')
+
+
+recolor_clothes(J['neck'].z - 0.1)
 bm = bmesh.new()
 bm.from_mesh(body.data)
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
@@ -953,6 +1052,14 @@ bone('spine', J['hips'], J['chest'], 'hips', True)
 bone('chest', J['chest'], J['neck'], 'spine', True)
 bone('neck', J['neck'], J['head'], 'chest', True)
 bone('head', J['head'], J['head_top'], 'neck', True)
+if MOUTH:
+    # 턱 뼈: 입 뒤쪽 위(경첩)에서 턱끝으로. 드라이버가 mouthOpen 만큼 아래로 돌린다
+    _mc = MOUTH['center']
+    # 경첩은 귀 쪽(머리 깊이 가운데)·입보다 조금 위. 그래야 아래 얼굴이 뒤로 쏠리지 않고 거의 곧게 내려간다.
+    # 경첩이 멀리 있으니 각도는 작게: 입술이 JAW_DROP 만큼 벌어지는 각을 json(jawMax)으로 넘긴다
+    _hinge = Vector((_mc.x, J['head'].y, _mc.z + 0.04))
+    MOUTH['jaw_max'] = JAW_DROP / max(0.1, _hinge.y - _mc.y)
+    bone('jaw', _hinge, Vector((_mc.x, _mc.y + 0.02, MOUTH['chin_z'])), 'head')
 for tag in ('L', 'R'):
     bone(f'shoulder_{tag}', J[f'clavicle_{tag}'], J[f'shoulder_{tag}'], 'chest')
     bone(f'upper_arm_{tag}', J[f'shoulder_{tag}'], J[f'elbow_{tag}'], f'shoulder_{tag}', True)
@@ -1020,6 +1127,23 @@ def write_weights(obj, Wt, names):
             vg[bi].add([int(vi)], float(col[vi]), 'REPLACE')
 
 
+if MOUTH:
+    # 손 자르기 등으로 정점 번호가 바뀌었으니 입술 위·아래를 지금 메시에서 다시 찾는다
+    _lo, _up = MO.lip_sides(body, MOUTH['curve'], MOUTH['xr'], MOUTH['center'])
+    log(f'lip sides: lower {len(_lo)}, upper {len(_up)}')
+    _jw = MO.jaw_weights(coords(), MOUTH['curve'], MOUTH['center'], MOUTH['mw'], MOUTH['chin_z'], J['head'].y, _lo, _up)
+    # 입 높이는 목→머리 가중치가 섞이는 띠 안이라 head 몫만 옮기면 턱이 반만 따라간다 → 모든 뼈 몫을 jw 비율로 턱에 넘긴다
+    _ji = bone_names.index('jaw')
+    _take = _jw
+    Wt *= (1 - _jw)[:, None]
+    Wt[:, _ji] += _jw
+    log(f'jaw weights: {int((_take > 0.05).sum())} verts')
+    # 턱이 더해지면 영향이 5개가 되는 정점이 생긴다 → 큰 것 4개만 남기고 다시 합을 1로 (glTF·three 는 정점당 4개)
+    _ord = np.argsort(-Wt, axis=1)
+    _cut = np.zeros_like(Wt, dtype=bool)
+    np.put_along_axis(_cut, _ord[:, 4:], True, axis=1)
+    Wt[_cut] = 0
+    Wt /= np.maximum(Wt.sum(axis=1, keepdims=True), 1e-9)
 write_weights(body, Wt, bone_names)
 log('unweighted verts', int((Wt.sum(axis=1) < 0.5).sum()), 'max influences', int((Wt > 1e-4).sum(axis=1).max()))
 
@@ -1041,6 +1165,9 @@ if USE_HAND:
         hm.object = arm
         hand_objs.append(ho)
         log(f'hand {tag} weighted: verts {len(ho.data.vertices)}, max influences {int((Wh > 1e-4).sum(axis=1).max())}')
+
+# 입 속은 텍스처에서 찾은 미소 선 높이에 맞춘다 (랜드마크 입 중심은 만화 얼굴이라 어긋난다)
+cav_objs = MO.add_cavity(bpy, arm, Vector((MOUTH['center'].x, MOUTH['center'].y, float(MOUTH['curve'](MOUTH['center'].x)))), MOUTH['mw'], MOUTH['center'].y, log) if MOUTH else []
 
 # 재질: 양면 (TRELLIS 면 방향이 다 맞지는 않는다)
 for m in body.data.materials:
@@ -1068,6 +1195,9 @@ info = {
     'height': APP_H,
     # --baked-face: 얼굴(눈·입)이 텍스처에 잘 구워져 있다 (머리 이식 모델). 오버레이는 깜빡임·입 벌림만 그린다
     'bakedFace': '--baked-face' in argv,
+    # 3D 입(턱 뼈)이 있으면 오버레이는 벌린 입을 그리지 않는다
+    'jaw': bool(MOUTH),
+    'jawMax': round(MOUTH['jaw_max'], 4) if MOUTH else None,
     'joints': {k: three(v) for k, v in J.items()},
     'palm': ({t: three(placed[t]['palm']) for t in ('L', 'R')} if placed else None),
     'face': {k: {kk: (three(vv) if isinstance(vv, list) else round(vv, 4)) for kk, vv in d.items()} for k, d in face.items()},
@@ -1145,7 +1275,7 @@ for ob in bpy.context.selected_objects:
     ob.select_set(False)
 arm.select_set(True)
 body.select_set(True)
-for ho in hand_objs + cuff_objs:
+for ho in hand_objs + cuff_objs + cav_objs:
     ho.select_set(True)
 bpy.ops.export_scene.gltf(filepath=str(OUT), export_format='GLB', use_selection=True, export_yup=True,
                           export_skins=True, export_animations=False, export_apply=False, export_extras=False)

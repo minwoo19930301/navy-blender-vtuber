@@ -335,6 +335,14 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
 
   /* ---- 얼굴 오버레이 ---- */
   const overlay = rigJson ? createFaceOverlay(head, rigJson) : null
+
+  /* ---- 턱 (3D 입): mouthOpen 만큼 장면 기준 +X 축(오른쪽) 둘레로 아래로 돌린다 ---- */
+  // 최대 벌림 (rad). 경첩이 귀 쪽이라 각은 작다 — rig.py 가 입술이 0.06 벌어지는 각을 jawMax 로 넘긴다
+  const JAW_MAX = rigJson?.jawMax ?? 0.1
+  const jawRec = recs.get('jaw') ?? null
+  const jawAxis = jawRec ? new T.Vector3(1, 0, 0).applyQuaternion(jawRec.restWQ.clone().invert()).normalize() : null
+  const _qj = new T.Quaternion()
+  let jawS = 0
   if (overlay) overlay.root.name = overlay.root.name || 'face_overlay'
 
   /* ---- 설정 ---- */
@@ -524,6 +532,13 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
     _q1.copy(neckQ).multiply(rhd.rel)
     headQ.copy(hq2).multiply(_q1)
     setWorldQ(rhd, headQ, neckQ)
+
+    if (jawRec && jawAxis) {
+      // 놀람은 조금 더 벌린다. 빠르게 따라가되 떨리지 않게 지수 평활
+      const target = clamp(Math.max(f.mouthOpen, f.fx?.surprised ? 0.5 : 0), 0, 1) * JAW_MAX
+      jawS += (target - jawS) * (1 - Math.exp(-dt * 22))
+      jawRec.bone.quaternion.copy(jawRec.restQ).multiply(_qj.setFromAxisAngle(jawAxis, jawS))
+    }
 
     driveArm(handL, f.armL, body.shrugL, dt, f.armL.stretch ?? 1)
     driveArm(handR, f.armR, body.shrugR, dt, f.armR.stretch ?? 1)
