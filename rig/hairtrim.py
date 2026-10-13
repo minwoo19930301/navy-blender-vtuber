@@ -40,14 +40,18 @@ def trim_sideburns(obj, eye_z, log=print):
         v = sum(l[uvl].uv[1] for l in f.loops) / len(f.loops)
         return arr[min(h - 1, int(v % 1.0 * h)), min(w - 1, int(u % 1.0 * w)), :3]
 
-    def in_side(c):
-        return 0.45 < abs(c.x) < 0.72 and -0.32 < c.y < 0.15 and eye_z - 0.35 < c.z < eye_z + 0.115
+    def in_side(c, top=0.115):
+        return 0.45 < abs(c.x) < 0.72 and -0.32 < c.y < 0.15 and eye_z - 0.35 < c.z < eye_z + top
 
-    cols = {f.index: color(f) for f in bm.faces if in_side(f.calc_center_median())}
+    # 짧은 가닥은 머리선까지(눈 + 0.16) 올라가 붙어 있어 조금 더 위까지 본다
+    cols = {f.index: color(f) for f in bm.faces if in_side(f.calc_center_median(), 0.16)}
     hair = [f for f in bm.faces if f.index in cols and cols[f.index] is not None and cols[f.index].max() < 0.25]
-    short = [f for f in hair if f.calc_center_median().x < 0 and f.calc_center_median().y < -0.12]
+    # 짧은 가닥: 구레나룻보다 앞(얼굴 쪽, y < -0.12)에 매달린 가닥. 양쪽 다 지운다
+    short = [f for f in hair if -0.27 < f.calc_center_median().y < -0.12 and 0.5 < abs(f.calc_center_median().x) < 0.63]
+    hair = [f for f in hair if f in short or f.calc_center_median().z < eye_z + 0.115]
     if short:
-        cut_z = min(f.calc_center_median().z for f in short)
+        cut_z = min(f.calc_center_median().z for f in short if f.calc_center_median().x < 0) if any(f.calc_center_median().x < 0 for f in short) \
+            else min(f.calc_center_median().z for f in short)
     else:
         cut_z = eye_z + 0.005
         log('hair trim: short strand not found, using eye height')
@@ -56,25 +60,58 @@ def trim_sideburns(obj, eye_z, log=print):
     skins = [f for f in bm.faces if f.index in cols and cols[f.index] is not None
              and cols[f.index][0] > 0.8 and 0.1 < cols[f.index][0] - cols[f.index][2] < 0.3 and cols[f.index][1] > 0.6]   # 뺨 피부색 (회색·그림자 빼고)
     dead = set(short) | set(long_)
+    # 지운 자리 둘레(구레나룻이 덮던 자리)의 어두운 테두리 면도 피부로 바꿀 대상 — 지운 면들의 위치 범위를 기억해 둔다
+    foot = [f.calc_center_median().copy() for f in dead]
     bmesh.ops.delete(bm, geom=list(dead), context='FACES')
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
     # 지운 자리의 열린 가장자리만 메운다 (입선 등 다른 열린 곳은 건드리지 않는다)
-    bnd = [e for e in bm.edges if e.is_boundary and in_side((e.verts[0].co + e.verts[1].co) / 2)]
+    bnd = [e for e in bm.edges if e.is_boundary and in_side((e.verts[0].co + e.verts[1].co) / 2, 0.17)]
     filled = bmesh.ops.holes_fill(bm, edges=bnd, sides=400)['faces'] if bnd else []
     if filled:
         filled = bmesh.ops.triangulate(bm, faces=filled)['faces']
     # 메운 면은 UV 가 비어 있다 → 가장 가까운 피부 면의 UV 한 점과 재질을 준다
     skin_pts = [(g.calc_center_median().copy(), g) for g in skins if g.is_valid]
+    hair_pts = [(g.calc_center_median().copy(), g) for g in bm.faces if g.is_valid and g.index in cols and cols[g.index] is not None
+                and cols[g.index].max() < 0.2 and g.calc_center_median().z > eye_z + 0.1]
     for f in filled:
         if not skin_pts:
             break
         c = f.calc_center_median()
-        _, g = min(skin_pts, key=lambda t: (t[0] - c).length)
+        # 머리선 근처(눈 + 0.1 위)에 난 구멍은 머리카락 색, 아래는 피부색으로 메운다
+        pool = hair_pts if (c.z > eye_z + 0.1 and hair_pts) else skin_pts
+        _, g = min(pool, key=lambda t: (t[0] - c).length)
         su = sum(l[uvl].uv[0] for l in g.loops) / len(g.loops)
         sv = sum(l[uvl].uv[1] for l in g.loops) / len(g.loops)
         for l in f.loops:
             l[uvl].uv = (su, sv)
         f.material_index = g.material_index
+    # 테두리 정리: 지운 자리 바로 둘레(0.03 안)·자른 높이 아래의 피부가 아닌 면(머리카락 가장자리의 어두운 띠)을 피부 UV 로
+    from mathutils.kdtree import KDTree
+    if foot and skin_pts:
+        kd = KDTree(len(foot))
+        for i, c in enumerate(foot):
+            kd.insert(c, i)
+        kd.balance()
+        n_edge = 0
+        for f in bm.faces:
+            if not f.is_valid:
+                continue
+            c = f.calc_center_median()
+            if c.z > cut_z - 0.004 or not in_side(c):
+                continue
+            if kd.find(c)[2] > 0.03:
+                continue
+            col = color(f)
+            if col is None or (col[0] > 0.8 and 0.1 < col[0] - col[2] < 0.3 and col[1] > 0.6):
+                continue
+            _, g = min(skin_pts, key=lambda t: (t[0] - c).length)
+            su = sum(l[uvl].uv[0] for l in g.loops) / len(g.loops)
+            sv = sum(l[uvl].uv[1] for l in g.loops) / len(g.loops)
+            for l in f.loops:
+                l[uvl].uv = (su, sv)
+            f.material_index = g.material_index
+            n_edge += 1
+        log(f'hair trim: cleaned {n_edge} outline faces')
     for f in bm.faces:
         f.smooth = True
     bm.to_mesh(me)
@@ -152,3 +189,81 @@ def blacken_eye_corner(obj, eye_c, half_w, half_h, side_sign, log=print):
     img.pack()
     node.image = img
     log(f'eye corner: pupil ellipse r=({rx:.3f},{rz:.3f}), painted {int(sel.sum())} texels')
+
+
+def mirror_eye(obj, src_c, dst_c, rx, rz, log=print):
+    """dst 눈(사용자: 왼쪽 눈 끝이 파여 보인다)을 괜찮은 src 눈의 좌우 반전으로 바꾼다 (텍셀 단위).
+    dst 둘레 삼각형을 UV 공간에 래스터화해 텍셀마다 3D 위치를 구하고, 얼굴 가운데(두 눈 중점 x) 기준 거울 위치에서 가장 가까운
+    src 텍셀 색을 가져온다. 타원 반지름 rx·rz 안은 그대로 바꾸고 가장자리 15% 는 섞는다."""
+    import bpy
+    from mathutils import Vector
+    from mathutils.kdtree import KDTree
+    me = obj.data
+    imgs = base_color_images(me)
+    me.calc_loop_triangles()
+    uvd = me.uv_layers.active.data
+    V = np.array([v.co[:] for v in me.vertices])
+    cx = (src_c.x + dst_c.x) / 2
+
+    def texels(center, scale):
+        out = {}
+        for t in me.loop_triangles:
+            if t.material_index not in imgs:
+                continue
+            P = V[list(t.vertices)]
+            c = P.mean(0)
+            if ((c[0] - center.x) / (rx * scale)) ** 2 + ((c[2] - center.z) / (rz * scale)) ** 2 > 1.0 or c[1] > center.y + 0.1:
+                continue
+            arr, w, h = imgs[t.material_index]
+            UV = np.array([uvd[li].uv[:] for li in t.loops])
+            px_ = np.stack([UV[:, 0] * w - 0.5, UV[:, 1] * h - 0.5], 1)
+            x0, x1 = int(np.floor(px_[:, 0].min())), int(np.ceil(px_[:, 0].max()))
+            y0, y1 = int(np.floor(px_[:, 1].min())), int(np.ceil(px_[:, 1].max()))
+            e1, e2 = px_[1] - px_[0], px_[2] - px_[0]
+            den = e1[0] * e2[1] - e2[0] * e1[1]
+            if abs(den) < 1e-9 or x1 - x0 > 200 or y1 - y0 > 200:
+                continue
+            gx, gy = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
+            dxp, dyp = gx - px_[0, 0], gy - px_[0, 1]
+            a_ = (dxp * e2[1] - e2[0] * dyp) / den
+            b_ = (e1[0] * dyp - dxp * e1[1]) / den
+            ins = (a_ >= -0.01) & (b_ >= -0.01) & (a_ + b_ <= 1.01) & (gx >= 0) & (gx < w) & (gy >= 0) & (gy < h)
+            pos = P[0] + a_[ins, None] * (P[1] - P[0]) + b_[ins, None] * (P[2] - P[0])
+            lst = out.setdefault(t.material_index, ([], []))
+            lst[0].append(pos)
+            lst[1].append(np.stack([gy[ins], gx[ins]], 1))
+        return {k: (np.concatenate(a), np.concatenate(b)) for k, (a, b) in out.items() if a}
+
+    src = texels(src_c, 1.25)
+    dst = texels(dst_c, 1.0)
+    if not src or not dst:
+        log('mirror eye: texels not found')
+        return
+    smi = max(src, key=lambda k: len(src[k][0]))
+    spos, spix = src[smi]
+    sarr = imgs[smi][0]
+    scol = sarr[spix[:, 0], spix[:, 1], :3]
+    tree = KDTree(len(spos))   # 거울 x, 높이 z 로 찾는다 (y=0 평면)
+    for i, p_ in enumerate(spos):
+        tree.insert(Vector((2 * cx - p_[0], 0.0, p_[2])), i)
+    tree.balance()
+    n = 0
+    for mi, (pos, pix) in dst.items():
+        arr = imgs[mi][0].copy()
+        q = [tree.find(Vector((p_[0], 0.0, p_[2]))) for p_ in pos]
+        j = np.array([x[1] for x in q])
+        d = np.array([x[2] for x in q])
+        r = np.sqrt(((pos[:, 0] - dst_c.x) / rx) ** 2 + ((pos[:, 2] - dst_c.z) / rz) ** 2)
+        k = np.clip((1.0 - r) / 0.15, 0, 1)[:, None]
+        ok = d < 0.02
+        cur = arr[pix[ok, 0], pix[ok, 1], :3]
+        arr[pix[ok, 0], pix[ok, 1], :3] = cur * (1 - k[ok]) + scol[j[ok]] * k[ok]
+        n += int(ok.sum())
+        m = me.materials[mi]
+        node = next(nd for nd in m.node_tree.nodes if nd.type == 'TEX_IMAGE' and nd.image and any(l.to_socket.name == 'Base Color' for l in nd.outputs['Color'].links))
+        img = bpy.data.images.new(node.image.name + '_eye', arr.shape[1], arr.shape[0], alpha=True)
+        img.pixels.foreach_set(arr.ravel())
+        img.pack()
+        node.image = img
+        imgs[mi] = (arr, arr.shape[1], arr.shape[0])
+    log(f'mirror eye: copied {n} texels (face center x={cx:+.3f})')
