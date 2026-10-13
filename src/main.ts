@@ -329,7 +329,7 @@ function updateDebug(raw: RigFrame, out: RigFrame, nowMs: number) {
     `cam ${trackingUp ? 'ON' : camError ? 'ERR ' + camError.slice(0, 32) : '…'}  fps ${fps}\n` +
     `${MIRROR_LABEL[mirrorMode]}\n` +
     `face ${raw.tracked.toFixed(2)}  yaw ${f2(raw.head.yaw)} pitch ${f2(raw.head.pitch)} roll ${f2(raw.head.roll)}\n` +
-    `blink L${raw.blinkL.toFixed(2)} R${raw.blinkR.toFixed(2)}  mouth ${raw.mouthOpen.toFixed(2)} smile ${f2(raw.mouthSmile)}\n` +
+    `blink L${raw.blinkL.toFixed(2)} R${raw.blinkR.toFixed(2)} ${(window as unknown as { __blinkRange?: string }).__blinkRange ?? ''}  mouth ${raw.mouthOpen.toFixed(2)} smile ${f2(raw.mouthSmile)}\n` +
     `body ${raw.body.present.toFixed(2)} lean ${f2(raw.body.lean.x)},${f2(raw.body.lean.z)} twist ${f2(raw.body.twist)}  reaction ${reactions.active() ?? '-'}\n` +
     `${arm('캐릭터 왼팔 (화면 오른쪽)', out.armL)}\n${arm('캐릭터 오른팔 (화면 왼쪽)', out.armR)}`
 }

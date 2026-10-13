@@ -773,7 +773,7 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
   if (debug) console.log(`faceOverlay: 준비 ${(performance.now() - t0).toFixed(0)}ms, 눈 ${eL.found}/${eR.found}, 입 y=${my.toFixed(3)}`)
 
   // 눈마다 '뜬 눈일 때의 깜빡임 값' 기준 (update 에서 배운다)
-  let baseL = 0.35, baseR = 0.35   // 처음엔 흔한 뜬 눈 값에서 시작
+  const eyeL = { base: 0.3, peak: 0.65 }, eyeR = { base: 0.3, peak: 0.65 }   // 처음엔 흔한 값에서 시작
   return {
     root,
     update(f: RigFrame, dt: number) {
@@ -786,14 +786,21 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       // 눈
       // 눈꺼풀: 카메라 깜빡임 값은 눈을 뜨고 있어도 사람·각도에 따라 0.3~0.5 로 머문다 (화면을 내려다볼 때, 실눈, 안경).
       // 그 값을 그대로 쓰면 뜬 눈 위로 눈꺼풀이 반쯤 내려와 살색이 덮인다. → 눈마다 '뜬 눈 기준값'을 배워서 그보다 확실히 클 때만 감는다.
-      // 기준값 = 감는 중이 아닐 때(0.7 미만)의 느린 평균 (약 2.5초). 눈을 잠깐 크게 떠도 출렁이지 않는다
-      const adapt = (base: number, v: number) => v < 0.7 ? base + (v - base) * Math.min(1, dt * 0.4) : base
-      baseL = adapt(baseL, clamp(f.blinkL, 0, 1)); baseR = adapt(baseR, clamp(f.blinkR, 0, 1))
-      const lidIn = (v: number, base: number) => {
-        const lo = Math.min(0.75, base + 0.18)
-        return smooth(lo, Math.max(lo + 0.2, 0.85), clamp(v, 0, 1))
+      // 사람마다 깜빡임 값의 범위가 다르다 (뜬 눈 0.05~0.5, 감은 눈 0.5~1.0). 눈마다 두 값을 배워서 그 사이 비율로 감는다.
+      // - 기준(뜬 눈): 지금 범위의 아래 60% 안에 있을 때의 느린 평균 (약 2.5초)
+      // - 최고(감은 눈): 더 큰 값이 오면 바로 올라가고, 평소엔 기준 + 0.3 쪽으로 아주 천천히(약 20초) 내려온다
+      const learn = (e: { base: number; peak: number }, v: number) => {
+        if (v > e.peak) e.peak = v
+        else e.peak += (Math.max(e.base + 0.3, 0.5) - e.peak) * Math.min(1, dt * 0.05)
+        if (v < e.base + 0.6 * (e.peak - e.base)) e.base += (v - e.base) * Math.min(1, dt * 0.4)
+        e.peak = Math.max(e.peak, e.base + 0.15)
       }
-      const lidL = Math.max(lidIn(f.blinkL, baseL), closeFx), lidR = Math.max(lidIn(f.blinkR, baseR), closeFx)
+      const vL = clamp(f.blinkL, 0, 1), vR = clamp(f.blinkR, 0, 1)
+      learn(eyeL, vL); learn(eyeR, vR)
+      // 범위의 35% 를 넘으면 감기 시작, 75% 면 다 감는다
+      const lidIn = (v: number, e: { base: number; peak: number }) => smooth(e.base + 0.35 * (e.peak - e.base), e.base + 0.75 * (e.peak - e.base), v)
+      const lidL = Math.max(lidIn(vL, eyeL), closeFx), lidR = Math.max(lidIn(vR, eyeR), closeFx)
+      ;(window as unknown as { __blinkRange?: string }).__blinkRange = `[${eyeL.base.toFixed(2)}~${eyeL.peak.toFixed(2)} | ${eyeR.base.toFixed(2)}~${eyeR.peak.toFixed(2)}]`
       const heart = heartFx
       // 눈동자: 고개 방향으로 조금 더 흘끗 + 트래킹 gaze (눈 반폭의 ±0.15)
       gazeS += (clamp(f.head.yaw * 0.22 + f.gaze.x * 0.1, -0.15, 0.15) - gazeS) * k
