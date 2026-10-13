@@ -208,7 +208,7 @@ def lip_sides(obj, curve=None, xr=None, center=None):
     return out[0], out[1]
 
 
-def jaw_weights(P, curve, center, mw, chin_z, head_y, lower, upper=()):
+def jaw_weights(P, curve, center, mw, chin_z, head_y, lower, upper=(), xr=None):
     """정점마다 턱 가중치 0..1. 입선 바로 아래부터 크게, 턱 밑(목)과 옆 뺨·얼굴 뒤로 가면 0"""
     x, y, z = P[:, 0], P[:, 1], P[:, 2]
     lz = curve(x)
@@ -217,9 +217,16 @@ def jaw_weights(P, curve, center, mw, chin_z, head_y, lower, upper=()):
     front = 1 - _ss(y - head_y, -0.18, -0.04)              # 얼굴 앞쪽만 (턱 밑·목 앞이 안 끌려 내려가게)
     chin = 1 - _ss((chin_z + 0.02) - z, 0.0, 0.05)         # 턱끝 아래로 가면 빨리 0
     w = below * lateral * front * chin
+    # 입 가운데만 크게 열리고 입꼬리 쪽은 거의 닫힌 채로 (입꼬리까지 똑같이 내려가면 웃는 선 전체가 검게 벌어져 무섭다)
+    if xr is not None:
+        mid, half = (xr[0] + xr[1]) / 2, (xr[1] - xr[0]) / 2
+        taper = np.cos(np.pi / 2 * np.clip(np.abs(x - mid) / half, 0, 1)) ** 0.8
+    else:
+        taper = np.ones_like(x)
+    w = w * (0.25 + 0.75 * taper)
     for i in lower:
         if i < len(w):
-            w[i] = 1.0
+            w[i] = float(taper[i])
     for i in upper:
         if i < len(w):
             w[i] = 0.0
@@ -259,12 +266,13 @@ def add_cavity(bpy, arm, center, mw, y_front, log=print):
         return ob
 
     cz = center.z - 0.012
-    cav_c = Vector((center.x, y_front + 0.065, cz))
+    cav_c = Vector((center.x, y_front + 0.08, cz))
     split = lambda co: float(_ss(np.array(cz - co.z), -0.02, 0.02))  # noqa: E731  아래쪽일수록 1
-    pocket = ellipsoid('navy_mouth', cav_c, (0.5 * mw, 0.06, 0.06), (0.24, 0.07, 0.09),
+    pocket = ellipsoid('navy_mouth', cav_c, (0.4 * mw, 0.07, 0.065), (0.47, 0.17, 0.19),
                        {'jaw': split, 'head': lambda co: 1 - split(co)})
     # 혀: 아래 입술 바로 뒤, 벌리면 입 속 아래쪽에 살짝 보이게
-    tongue = ellipsoid('navy_tongue', Vector((center.x, y_front + 0.035, cz - 0.022)), (0.32 * mw, 0.045, 0.02), (0.82, 0.42, 0.44),
+    # 혀: 입 속 아래쪽, 아래 입술 바로 뒤 (앞으로 나오면 턱 밖으로 비친다)
+    tongue = ellipsoid('navy_tongue', Vector((center.x, y_front + 0.07, cz - 0.03)), (0.24 * mw, 0.045, 0.022), (0.9, 0.5, 0.52),
                        {'jaw': lambda co: 1.0})
     log(f'mouth: cavity at ({cav_c.x:+.3f},{cav_c.y:+.3f},{cav_c.z:+.3f}) width {mw:.3f}')
     return [pocket, tongue]

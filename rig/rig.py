@@ -287,7 +287,7 @@ if '--baked-face' not in argv:
 # ───────────────────────── 3-1. 3D 입 (rig/mouth.py): 구운 입선을 따라 가르고 턱 뼈로 연다
 import mouth as MO  # noqa: E402
 MOUTH = None
-JAW_DROP = 0.12   # 입을 다 벌렸을 때 아래 입술이 내려가는 거리 (앱 단위, 입 폭 ≈ 0.3)
+JAW_DROP = 0.10   # 입을 다 벌렸을 때 아래 입술이 내려가는 거리 (앱 단위, 입 폭 ≈ 0.3)
 if '--baked-face' in argv and F:
     _cl, _cr = joint(*F[291][:2], depth_bias=0.5), joint(*F[61][:2], depth_bias=0.5)
     _mc, _mw = (_cl + _cr) / 2, (_cl - _cr).length
@@ -1155,7 +1155,7 @@ if MOUTH:
     # 손 자르기 등으로 정점 번호가 바뀌었으니 입술 위·아래를 지금 메시에서 다시 찾는다
     _lo, _up = MO.lip_sides(body, MOUTH['curve'], MOUTH['xr'], MOUTH['center'])
     log(f'lip sides: lower {len(_lo)}, upper {len(_up)}')
-    _jw = MO.jaw_weights(coords(), MOUTH['curve'], MOUTH['center'], MOUTH['mw'], MOUTH['chin_z'], J['head'].y, _lo, _up)
+    _jw = MO.jaw_weights(coords(), MOUTH['curve'], MOUTH['center'], MOUTH['mw'], MOUTH['chin_z'], J['head'].y, _lo, _up, MOUTH['xr'])
     # 입 높이는 목→머리 가중치가 섞이는 띠 안이라 head 몫만 옮기면 턱이 반만 따라간다 → 모든 뼈 몫을 jw 비율로 턱에 넘긴다
     _ji = bone_names.index('jaw')
     _take = _jw
