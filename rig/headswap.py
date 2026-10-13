@@ -150,6 +150,21 @@ log(f'scale eye={s_eye:.3f} mouth={s_mouth:.3f} chin={s_chin:.3f} → {S:.3f}, o
 box.data.transform(Matrix.Translation(T) @ Matrix.Scale(S, 4))
 box.data.update()
 
+# 코를 살짝 뾰족하게: 코끝 둘레 정점을 앞(-Y)으로 당기고 코 축 쪽으로 조금 모은다 (사용자 요청)
+NOSE_R, NOSE_PULL, NOSE_PINCH = 0.032, 0.009, 0.18
+tip = T + fx['nose'] * S
+n_moved = 0
+for v in box.data.vertices:
+    d = (v.co - tip).length
+    if d >= NOSE_R or v.co.y > tip.y + 0.03:   # 뒤통수 쪽 정점은 건드리지 않는다
+        continue
+    k = (1 - (d / NOSE_R) ** 2) ** 2
+    lateral = Vector((v.co.x - tip.x, 0, v.co.z - tip.z))
+    v.co = v.co + Vector((0, -NOSE_PULL * k, 0)) - lateral * (NOSE_PINCH * k)
+    n_moved += 1
+box.data.update()
+log(f'nose sharpened: {n_moved} verts around tip {tuple(round(c, 3) for c in tip)}')
+
 # 깃 높이와 목 축
 chin_z = fb['chin'].z
 cz_body = collar_z(body, 'body-front', chin_z)

@@ -18,8 +18,8 @@ const ALT_NAME = isMac ? 'Option' : 'Alt'
 if (isWin) app.setAppUserModelId('com.minwokim.navy-blender-vtuber')
 
 // 공 몸통 + 국수 팔: 양팔을 옆으로 뻗으면 공 지름의 약 2.3배라 가로세로 비슷한 창
-const WIN_W = 600
-const WIN_H = 700
+const WIN_W = 300 // 기본 창 크기 (예전 600×700 의 절반 — 화면을 덜 가리게)
+const WIN_H = 350
 
 /** @type {BrowserWindow | null} */
 let win = null
@@ -123,8 +123,8 @@ function createWindow() {
     // Electron 문서: 투명 창은 크기 조절이 안 되고, resizable:true 가 투명을 깨뜨릴 수 있다. 맥은 지금 그대로 둔다.
     // Windows는 창 크기를 고정한다 (이동은 아래 drag-by IPC, 아바타 크기는 메뉴의 줌으로 조절).
     resizable: isMac,
-    minWidth: 360,
-    minHeight: 440,
+    minWidth: 180,
+    minHeight: 200,
     fullscreenable: false,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),

@@ -599,13 +599,25 @@ function drawMouth(p: Patch, ox: number, oy: number, mw: number, eyeDist: number
     g.beginPath(); g.ellipse(-r * 0.4, r * 0.45, r * 0.32, r * 0.16, 0, 0, Math.PI * 2); g.fill()
     g.globalAlpha = 1
   }
+  if (st.alpha > 0.01 && st.baked) {
+    // 구운 얼굴: 벌린 입 아래로 구운 미소 선이 따로 보이면 입이 두 개처럼 어색하다 → 입이 열리는 만큼 미소 선을 피부로 덮는다
+    g.save()
+    g.globalAlpha = st.alpha
+    const grad = g.createLinearGradient(0, 0.05, 0, -0.05)
+    grad.addColorStop(0, css(skinTop)); grad.addColorStop(1, css(skinBot))
+    g.fillStyle = grad
+    g.fillRect(-0.3, -0.07, 0.6, 0.14)
+    featherEllipse(g, mw * 0.66, 0.05, mw * 0.52)
+    g.restore()
+  }
   if (st.alpha > 0.01) {
     const o = st.open, sm = st.smile
     // 구운 얼굴은 입술(구운 미소 선)이 넓어서, 그보다 좁으면 입이 작아 보인다 → 입술 폭에 가깝게 벌린다
     const W = st.baked ? mw * clamp(0.72 + 0.22 * o + 0.08 * sm, 0.62, 1.0) : mw * clamp(0.36 + 0.26 * o + 0.1 * sm, 0.3, 0.82)
     const H = 0.012 + o * 0.15
     const lift = 0.016 * sm + 0.006
-    const y0 = 0.002
+    // 구운 얼굴은 입 윗선을 구운 미소 선 높이에 맞춘다 (입이 선보다 아래에서 열리면 어색하다)
+    const y0 = st.baked ? 0.012 : 0.002
     g.globalAlpha = st.alpha
     const path = () => {
       g.beginPath()
