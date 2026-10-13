@@ -5,6 +5,7 @@
  "bakedFace": true,
  "jaw": true,
  "jawMax": 0.1417,
+ "lipLift": 0.0318,
  "joints": {
   "hips": [
    0.0,

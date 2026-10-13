@@ -630,7 +630,8 @@ def recolor_clothes(z_max, mat_index=0):
         if name not in [x.name for x in me.materials]:
             me.materials.append(m_)
         return [x.name for x in me.materials].index(name)
-    i_navy, i_white = flat('jacket_navy', mn_), flat('shirt_white', mw_)
+    # 셔츠는 고정 흰색 (깃 위까지 칠하면서 목 피부 쪽 밝은 면이 섞여 중앙값이 분홍빛이 됐다)
+    i_navy, i_white = flat('jacket_navy', mn_), flat('shirt_white', (0.95, 0.93, 0.91))
     # 셔츠 띠 안 = 흰색, 나머지(피부 빼고) = 남색. 사이 띠를 원래 텍스처로 두면 흰 실밥처럼 보인다
     # 셔츠 띠 안은 면 방향과 상관없이 흰색 (재킷 가장자리에서 옆으로 삐친 조각이 셔츠 위에 남색 실밥처럼 보인다)
     front_half = ctr[:, 1] < yc
@@ -684,7 +685,7 @@ def recolor_clothes(z_max, mat_index=0):
     log(f'clothes: {int(jacket.sum())} faces → flat navy {np.round(mn_, 3)}, {int(shirt.sum())} → flat white {np.round(mw_, 3)}')
 
 
-recolor_clothes(J['neck'].z - 0.1)
+recolor_clothes(J['neck'].z + 0.12)   # 재킷 깃·어깨 윗면까지 (피부는 그대로)
 bm = bmesh.new()
 bm.from_mesh(body.data)
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
@@ -1128,6 +1129,11 @@ if MOUTH:
     _hinge = Vector((_mc.x, J['head'].y, _mc.z + 0.04))
     MOUTH['jaw_max'] = JAW_DROP / max(0.1, _hinge.y - _mc.y)
     bone('jaw', _hinge, Vector((_mc.x, _mc.y + 0.02, MOUTH['chin_z'])), 'head')
+    # 윗입술 뼈: 입을 벌릴수록 윗입술 가운데를 올려 U 자 윗선을 편다 (드라이버가 head 축 위쪽으로 옮긴다)
+    _lz = float(MOUTH['curve'](_mc.x))
+    bone('lip_up', Vector((_mc.x, _mc.y + 0.04, _lz + 0.02)), Vector((_mc.x, _mc.y + 0.04, _lz + 0.08)), 'head')
+    _x0, _x1 = MOUTH['xr']
+    MOUTH['lip_lift'] = 0.6 * max(0.0, float(MOUTH['curve'](_x0)) - _lz)
 for tag in ('L', 'R'):
     bone(f'shoulder_{tag}', J[f'clavicle_{tag}'], J[f'shoulder_{tag}'], 'chest')
     bone(f'upper_arm_{tag}', J[f'shoulder_{tag}'], J[f'elbow_{tag}'], f'shoulder_{tag}', True)
@@ -1197,7 +1203,8 @@ def write_weights(obj, Wt, names):
 
 if MOUTH:
     # 손 자르기 등으로 정점 번호가 바뀌었으니 입술 위·아래를 지금 메시에서 다시 찾는다
-    _lo, _up = MO.lip_sides(body, MOUTH['curve'], MOUTH['xr'], MOUTH['center'])
+    _lo, _up_lip = MO.lip_sides(body, MOUTH['curve'], MOUTH['xr'], MOUTH['center'])
+    _up = _up_lip
     log(f'lip sides: lower {len(_lo)}, upper {len(_up)}')
     _jw = MO.jaw_weights(coords(), MOUTH['curve'], MOUTH['center'], MOUTH['mw'], MOUTH['chin_z'], J['head'].y, _lo, _up, MOUTH['xr'])
     # 입 높이는 목→머리 가중치가 섞이는 띠 안이라 head 몫만 옮기면 턱이 반만 따라간다 → 모든 뼈 몫을 jw 비율로 턱에 넘긴다
@@ -1205,6 +1212,20 @@ if MOUTH:
     _take = _jw
     Wt *= (1 - _jw)[:, None]
     Wt[:, _ji] += _jw
+    # 윗입술: 입선 위 0~0.05, 가운데가 가장 크고 입꼬리로 갈수록 0
+    _Pc = coords()
+    _cx = (MOUTH['xr'][0] + MOUTH['xr'][1]) / 2
+    _hw_ = (MOUTH['xr'][1] - MOUTH['xr'][0]) / 2
+    _d = _Pc[:, 2] - MOUTH['curve'](_Pc[:, 0])
+    _up = (1 - MO._ss(_d, 0.0, 0.05)) * (_d > -0.002) * np.cos(np.pi / 2 * np.clip(np.abs(_Pc[:, 0] - _cx) / _hw_, 0, 1)) ** 0.8
+    _up *= (1 - MO._ss(_Pc[:, 1] - J['head'].y, -0.18, -0.04))
+    for i in _up_lip:
+        _up[i] = max(_up[i], 0.0)
+    _up[list(_lo)] = 0.0
+    _li = bone_names.index('lip_up')
+    Wt *= (1 - _up)[:, None]
+    Wt[:, _li] += _up
+    log(f'upper lip weights: {int((_up > 0.05).sum())} verts')
     log(f'jaw weights: {int((_take > 0.05).sum())} verts')
     # 턱이 더해지면 영향이 5개가 되는 정점이 생긴다 → 큰 것 4개만 남기고 다시 합을 1로 (glTF·three 는 정점당 4개)
     _ord = np.argsort(-Wt, axis=1)
@@ -1308,6 +1329,7 @@ info = {
     # 3D 입(턱 뼈)이 있으면 오버레이는 벌린 입을 그리지 않는다
     'jaw': bool(MOUTH),
     'jawMax': round(MOUTH['jaw_max'], 4) if MOUTH else None,
+    'lipLift': round(MOUTH['lip_lift'], 4) if MOUTH else None,
     'joints': {k: three(v) for k, v in J.items()},
     'palm': ({t: three(placed[t]['palm']) for t in ('L', 'R')} if placed else None),
     'face': {k: {kk: (three(vv) if isinstance(vv, list) else round(vv, 4)) for kk, vv in d.items()} for k, d in face.items()},
@@ -1380,12 +1402,14 @@ for tag in ('L', 'R'):
     cuff_objs.append(ob_c)
     log(f'cuff ring {tag}: r_open={r_open:.3f} at t={t_end:.3f}')
 
+collar_objs = []   # 크루넥 고리는 목 뒤로 잡혀 효과가 없어 뺐다 (깃 위까지 단색으로 칠한 것으로 충분)
+
 # ───────────────────────── 내보내기
 for ob in bpy.context.selected_objects:
     ob.select_set(False)
 arm.select_set(True)
 body.select_set(True)
-for ho in hand_objs + cuff_objs + cav_objs + pit_objs:
+for ho in hand_objs + cuff_objs + cav_objs + pit_objs + collar_objs:
     ho.select_set(True)
 bpy.ops.export_scene.gltf(filepath=str(OUT), export_format='GLB', use_selection=True, export_yup=True,
                           export_skins=True, export_animations=False, export_apply=False, export_extras=False)

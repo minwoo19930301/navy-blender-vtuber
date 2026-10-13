@@ -10,6 +10,8 @@ export interface NavyRig {
   jaw?: boolean
   /** 턱 최대 벌림 각 (rad) */
   jawMax?: number | null
+  /** 입을 다 벌렸을 때 윗입술 가운데를 올리는 거리 */
+  lipLift?: number | null
   joints: Record<string, [number, number, number]>
   face: {
     eyeL?: { center: [number, number, number]; width: number; height: number }

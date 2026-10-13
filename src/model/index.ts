@@ -343,6 +343,10 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
   const jawAxis = jawRec ? new T.Vector3(1, 0, 0).applyQuaternion(jawRec.restWQ.clone().invert()).normalize() : null
   const _qj = new T.Quaternion()
   let jawS = 0
+  /* ---- 윗입술: 입을 벌린 만큼 head 위쪽으로 올려 U 자 윗선을 편다 (rig.json lipLift) ---- */
+  const lipRec = recs.get('lip_up') ?? null
+  const LIP_LIFT = rigJson?.lipLift ?? 0
+  const lipUpLocal = lipRec ? new T.Vector3(0, 1, 0).applyQuaternion(R('head').restWQ.clone().invert().multiply(new T.Quaternion())).normalize() : null
   if (overlay) overlay.root.name = overlay.root.name || 'face_overlay'
 
   /* ---- 설정 ---- */
@@ -545,6 +549,11 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
       const target = clamp(Math.max(f.mouthOpen, f.fx?.surprised ? 0.5 : 0), 0, 1) * JAW_MAX
       jawS += (target - jawS) * (1 - Math.exp(-dt * 22))
       jawRec.bone.quaternion.copy(jawRec.restQ).multiply(_qj.setFromAxisAngle(jawAxis, jawS))
+      if (lipRec && lipUpLocal) {
+        // 벌림 비율(0..1)만큼 윗입술 가운데를 올린다. 위치는 부모(head) 기준이라 head 의 위쪽 축으로 옮긴다
+        const k = JAW_MAX > 0 ? jawS / JAW_MAX : 0
+        lipRec.bone.position.copy(lipRec.restPos).addScaledVector(lipUpLocal, LIP_LIFT * k)
+      }
     }
 
     driveArm(handL, f.armL, body.shrugL, dt, f.armL.stretch ?? 1)
