@@ -202,6 +202,20 @@ for tag, other in (('L', 'R'), ('R', 'L')):
         w_this = P[15][:2] if tag == 'L' else P[16][:2]
         hand_pts[tag] = [(w_this[0] - (p[0] - w_other[0]), w_this[1] + (p[1] - w_other[1])) for p in src]
         log(f'hand {tag}: mirrored from {other}')
+# 양손 다 못 찾으면(손을 새 손으로 갈아 끼울 때는 생성 손 랜드마크가 필요 없다) 아래팔 연장선으로 임시 점을 만든다
+for tag, ei, wi in (('L', 13, 15), ('R', 14, 16)):
+    if tag not in hand_pts:
+        (ex, ey), (wx, wy) = P[ei][:2], P[wi][:2]
+        dx, dy = wx - ex, wy - ey
+        ln = max(1e-6, (dx * dx + dy * dy) ** 0.5)
+        ux, uy = dx / ln, dy / ln
+        px = lambda t, o=0.0: (wx + ux * t * ln - uy * o * ln, wy + uy * t * ln + ux * o * ln)  # noqa: E731
+        pts = [px(0)] * 21
+        for i, (t, o) in {1: (0.1, -0.12), 2: (0.2, -0.18), 3: (0.3, -0.2), 4: (0.4, -0.2),
+                          5: (0.35, -0.06), 10: (0.55, 0.0), 12: (0.75, 0.0), 14: (0.55, 0.03), 16: (0.72, 0.04), 17: (0.33, 0.08)}.items():
+            pts[i] = px(t, o)
+        hand_pts[tag] = pts
+        log(f'hand {tag}: synthesized from forearm')
 for tag in ('L', 'R'):
     hp = hand_pts[tag]
     J[f'hand_{tag}'] = J[f'wrist_{tag}']
@@ -452,6 +466,42 @@ def cut_hand(tag):
 for tag in ('L', 'R'):
     cut_hand(tag)
 body.data.update()
+
+
+def drop_stray_skin(z_max):
+    """깃 아래 몸 메시에 남은 피부색 조각(잘린 생성 손의 잔해·안쪽 껍질)이 소매·재킷 밖으로 비친다 → 지운다.
+    재질마다 자기 텍스처에서 색을 읽는다 (머리 이식 모델은 재질이 둘이다). 새 손은 이 뒤에 붙으니 영향이 없다."""
+    me = body.data
+    imgs = {}
+    for mi, m in enumerate(me.materials):
+        for n in (m.node_tree.nodes if m and m.node_tree else []):
+            if n.type == 'TEX_IMAGE' and n.image:
+                w, h = n.image.size
+                px = np.empty(w * h * 4, np.float32)
+                n.image.pixels.foreach_get(px)
+                imgs[mi] = (px.reshape(h, w, 4), w, h)
+                break
+    uv = me.uv_layers.active.data
+    dead = []
+    for poly in me.polygons:
+        if poly.center.z > z_max or poly.material_index not in imgs:
+            continue
+        arr, w, h = imgs[poly.material_index]
+        u = sum(uv[i].uv[0] for i in poly.loop_indices) / poly.loop_total % 1.0
+        v = sum(uv[i].uv[1] for i in poly.loop_indices) / poly.loop_total % 1.0
+        r, g, b_ = arr[min(h - 1, int(v * h)), min(w - 1, int(u * w)), :3]
+        if r > 0.45 and r - b_ > 0.12:
+            dead.append(poly.index)
+    bm_ = bmesh.new()
+    bm_.from_mesh(me)
+    bm_.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm_, geom=[bm_.faces[i] for i in dead], context='FACES')
+    bm_.to_mesh(me)
+    bm_.free()
+    log(f'stray skin faces removed below z={z_max:.2f}: {len(dead)}')
+
+
+drop_stray_skin(J['neck'].z - 0.12)
 bm = bmesh.new()
 bm.from_mesh(body.data)
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
@@ -1000,6 +1050,8 @@ info = {
     'source': Path(SRC).name,
     'scale': S,
     'height': APP_H,
+    # --baked-face: 얼굴(눈·입)이 텍스처에 잘 구워져 있다 (머리 이식 모델). 오버레이는 깜빡임·입 벌림만 그린다
+    'bakedFace': '--baked-face' in argv,
     'joints': {k: three(v) for k, v in J.items()},
     'palm': ({t: three(placed[t]['palm']) for t in ('L', 'R')} if placed else None),
     'face': {k: {kk: (three(vv) if isinstance(vv, list) else round(vv, 4)) for kk, vv in d.items()} for k, d in face.items()},
