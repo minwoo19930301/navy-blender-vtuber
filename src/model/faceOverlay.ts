@@ -498,6 +498,8 @@ function drawEye(p: Patch, eye: EyeShape, st: EyeState, debug: boolean, baked = 
   }
   if (L > 0.01 || st.heart > 0.01 || open) {
     g.filter = 'blur(0.8px)'
+    // 구운 얼굴: 눈꺼풀 윗변이 눈 바깥 고리에 걸려 있어 조금만 내려와도 구운 속눈썹 선을 살색으로 덮는다 → 감기 시작이 확실할 때 서서히 나타나게
+    if (baked) g.globalAlpha = smooth(0.12, 0.35, Math.max(L, st.heart))
     // 윗눈꺼풀: 눈 윗호 ~ 눈꺼풀 선
     g.beginPath()
     for (let i = 0; i <= M2; i++) { const s = -A + 2 * A * i / M2; if (i) g.lineTo(s, T_(s) + 0.004); else g.moveTo(s, T_(s) + 0.004) }
@@ -770,6 +772,8 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
 
   if (debug) console.log(`faceOverlay: 준비 ${(performance.now() - t0).toFixed(0)}ms, 눈 ${eL.found}/${eR.found}, 입 y=${my.toFixed(3)}`)
 
+  // 눈마다 '뜬 눈일 때의 깜빡임 값' 기준 (update 에서 배운다)
+  let baseL = 0.35, baseR = 0.35   // 처음엔 흔한 뜬 눈 값에서 시작
   return {
     root,
     update(f: RigFrame, dt: number) {
@@ -780,9 +784,16 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       archFx += ((happy ? 1 : 0) - archFx) * k
       heartFx += ((fx.heart ? 1 : 0) - heartFx) * k
       // 눈
-      // 구운 얼굴은 트래킹의 작은 깜빡임 값(실눈·조명 탓 0.1~0.25)에도 눈꺼풀이 내려와 졸려 보인다 → 0.22 아래는 무시하고 그 위를 늘려 쓴다
-      const lidIn = (v: number) => baked ? smooth(0.22, 0.8, clamp(v, 0, 1)) : clamp(v, 0, 1)
-      const lidL = Math.max(lidIn(f.blinkL), closeFx), lidR = Math.max(lidIn(f.blinkR), closeFx)
+      // 눈꺼풀: 카메라 깜빡임 값은 눈을 뜨고 있어도 사람·각도에 따라 0.3~0.5 로 머문다 (화면을 내려다볼 때, 실눈, 안경).
+      // 그 값을 그대로 쓰면 뜬 눈 위로 눈꺼풀이 반쯤 내려와 살색이 덮인다. → 눈마다 '뜬 눈 기준값'을 배워서 그보다 확실히 클 때만 감는다.
+      // 기준값 = 감는 중이 아닐 때(0.7 미만)의 느린 평균 (약 2.5초). 눈을 잠깐 크게 떠도 출렁이지 않는다
+      const adapt = (base: number, v: number) => v < 0.7 ? base + (v - base) * Math.min(1, dt * 0.4) : base
+      baseL = adapt(baseL, clamp(f.blinkL, 0, 1)); baseR = adapt(baseR, clamp(f.blinkR, 0, 1))
+      const lidIn = (v: number, base: number) => {
+        const lo = Math.min(0.75, base + 0.18)
+        return smooth(lo, Math.max(lo + 0.2, 0.85), clamp(v, 0, 1))
+      }
+      const lidL = Math.max(lidIn(f.blinkL, baseL), closeFx), lidR = Math.max(lidIn(f.blinkR, baseR), closeFx)
       const heart = heartFx
       // 눈동자: 고개 방향으로 조금 더 흘끗 + 트래킹 gaze (눈 반폭의 ±0.15)
       gazeS += (clamp(f.head.yaw * 0.22 + f.gaze.x * 0.1, -0.15, 0.15) - gazeS) * k
@@ -791,7 +802,7 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
         const kk = `${q(lid, 40)}|${q(archFx, 20)}|${q(heart, 20)}|${q(gazeS, 60)}`
         if (kk === key.v) continue
         key.v = kk
-        const vis = (!baked && e.found) || lid > 0.012 || heart > 0.01 || debug
+        const vis = (!baked && e.found) || lid > (baked ? 0.12 : 0.012) || heart > 0.01 || debug
         p.mesh.visible = vis
         if (vis) drawEye(p, e, s, debug, baked)
       }

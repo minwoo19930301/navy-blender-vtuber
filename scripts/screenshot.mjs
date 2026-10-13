@@ -107,6 +107,10 @@ try {
     )
   }
 
+  if (process.env.PRINT_EVAL) {
+    const r = await send('Runtime.evaluate', { expression: process.env.PRINT_EVAL, returnByValue: true })
+    console.log('EVAL', JSON.stringify(r.result?.result?.value))
+  }
   const shot = await send('Page.captureScreenshot', { format: 'png' })
   if (!shot.result?.data) throw new Error('captureScreenshot returned no data')
   writeFileSync(resolve(out), Buffer.from(shot.result.data, 'base64'))
