@@ -1,20 +1,25 @@
 """
 TRELLIS 로 만든 캐릭터 메시에 뼈대를 넣어 three.js 용 스킨드 GLB 를 만든다.
 
-  Blender --background --python rig/rig.py -- trellis/apose-s1-t42d.glb public/navy.glb [--preview shots/rig.png]
+  Blender --background --python rig/rig.py -- trellis/apose-s1-t42d.glb public/wip/rig.glb \
+      [--preview shots/body_rig/pose] [--wview shots/body_rig/w] [--no-hand] [--hand-dir rig/hand]
 
 입력: 텍스처 입힌 TRELLIS GLB(눕혀서 나옴, 높이 1), rig/front.json(정면 직교 렌더 픽셀↔모델 좌표),
       rig/front-landmarks.json(MediaPipe 포즈·얼굴), rig/front-hands.json(손).
-출력: public/navy.glb (Y 위, 책상=재킷 밑단 y=0, 정면 +Z) + public/navy-rig.json (얼굴 오버레이 위치 등).
+출력: OUT(.glb) (Y 위, 책상=재킷 밑단 y=0, 정면 +Z) + OUT-rig.json (관절·얼굴 오버레이 위치).
 
 순서
-1. 세우고 앱 단위로 키운다 (재킷 밑단 → 머리 끝 = APP_H). 밑단 아래(바지)는 잘라 낸다 — 투명 오버레이에서 다리가 보이면 안 된다.
+1. 세우고 앱 단위로 키운다 (재킷 밑단 → 머리 끝 = APP_H). 밑단 아래(바지)는 잘라 낸다.
 2. 정점 병합(UV 는 면 모서리별이라 유지된다) → 면 방향 통일 → 데시메이트.
 3. MediaPipe 2D 점을 정면 직교 좌표로 옮기고, 깊이는 그 자리에서 앞·뒤로 쏜 레이 교점의 가운데로 잡는다.
-4. 뼈대: hips·spine·chest·neck·head, 양쪽 shoulder·upper_arm·forearm·hand·thumb1/2·fingers1/2.
-   손가락 넷은 메시에서 붙어 있어(벙어리장갑 모양) 하나의 fingers 사슬로 굽힌다.
-5. 가중치: 복셀 리메시한 물샐틈없는 대역 메시에 자동 가중치(bone heat)를 주고, 원래 메시로 옮긴다(가까운 면 보간).
-   머리카락·얼굴은 머리 뼈에 1.0 으로 고정한다 (목 아래 깃 근처만 섞인다).
+3a. 소매 중심선: 표면 샘플로 높이별 소매 바깥 끝·깊이 평균을 재서 어깨·팔꿈치·손목 관절을 소매 한가운데로 옮긴다.
+4. 생성된 손(벙어리장갑)은 소매 끝(피부 텍스처가 시작되는 곳) 안쪽에서 잘라 낸다(+ 소매 속 안감 껍질 제거). 새 손 메시는 소매 안으로 끼워 넣는다.
+4b. 겨드랑이: 팔(소매 통)과 옆구리가 얇은 막으로 붙어 있어서 팔 면/몸통 면 사이 모서리를 끊는다(정점 복제). 분류는 소매 축까지 거리(타원 보정) + 이웃 다수결.
+    --prune 을 주면 겉에서 안 보이는 안쪽 껍질도 지운다(기본 꺼짐: 효과가 작았다).
+5. 뼈대: hips·spine·chest·neck·head, 양쪽 shoulder·upper_arm·forearm·hand + (임시 손가락 | 새 손의 손가락 15개).
+6. 가중치: bone heat 대신 결정적 절차 가중치 (rig/weights.py). 뼈 선분까지의 거리를 반경으로 나눠 팔/몸통을 가르고,
+   관절 면(이등분 평면)을 기준으로 매끈하게 섞는다. 머리·머리카락은 head 1.0.
+7. 새 손이 있으면(rig/hand/hand_R.glb + hand_R.json) rig/handattach.py 가 가져와 L 은 거울로 만들고, 손가락 뼈를 달고 가중치를 준다.
 """
 import json
 import math
@@ -23,13 +28,27 @@ from pathlib import Path
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
 HERE = Path(__file__).resolve().parent
 argv = sys.argv[sys.argv.index('--') + 1:]
 SRC, OUT = argv[0], Path(argv[1]).resolve()
-PREVIEW = argv[argv.index('--preview') + 1] if '--preview' in argv else None
+
+
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+PREVIEW = opt('--preview')          # 포즈별 렌더 접두사 (shots/body_rig/pose → pose-idle-front.png ...)
+WVIEW = opt('--wview')              # 가중치 색 렌더 접두사
+HAND_DIR = Path(opt('--hand-dir', HERE / 'hand'))
+USE_HAND = '--no-hand' not in argv and (HAND_DIR / 'hand_R.glb').exists() and (HAND_DIR / 'hand_R.json').exists()
+PALM_LEN = float(opt('--palm-len', 0)) or None   # 새 손 손목→중지 MCP 길이 (앱 단위, 없으면 hand json 값)
+sys.path.insert(0, str(HERE))
+import handattach as HA  # noqa: E402
+import weights as W_  # noqa: E402
 
 APP_H = 3.05          # 재킷 밑단(책상) → 머리 끝 높이. 예전 모델 프레이밍과 같다
 TARGET_TRIS = 120000  # 실시간 오버레이용 삼각형 수
@@ -93,6 +112,26 @@ def to_app(x, y, z):
 body.data.transform(Matrix.Translation((0, 0, -hem_z)))
 body.data.transform(Matrix.Scale(S, 4))
 body.data.update()
+
+# 몸통 폭 보정: 머리에 비해 몸이 좁다. 목 밑동 아래로 x 를 최대 14% 넓힌다 (머리는 그대로)
+TORSO_WIDEN = 0.14
+_, _sh_z = px_to_model(512, (P[11][1] + P[12][1]) / 2)
+NECK_BASE = to_app(0, 0, _sh_z).z + 0.05
+
+
+def widen(z):
+    """높이 z 에서 x 배율: 목 밑동 이상 1.0, 그 0.15 아래부터 1+TORSO_WIDEN"""
+    t = np.clip((np.asarray(z) - NECK_BASE) / -0.15, 0.0, 1.0)
+    return 1 + TORSO_WIDEN * t * t * (3 - 2 * t)
+
+
+_a = np.empty(len(body.data.vertices) * 3, np.float32)
+body.data.vertices.foreach_get('co', _a)
+_a = _a.reshape(-1, 3)
+_a[:, 0] *= widen(_a[:, 2])
+body.data.vertices.foreach_set('co', _a.ravel())
+body.data.update()
+log(f'torso widen: neck_base z={NECK_BASE:.3f}, x scale up to {1 + TORSO_WIDEN:.2f}')
 
 # ───────────────────────── 2. 자르기·병합·면 방향·데시메이트
 bm = bmesh.new()
@@ -173,8 +212,655 @@ for tag in ('L', 'R'):
     J[f'thumb2_{tag}'] = joint(*hp[3])
     J[f'thumb_tip_{tag}'] = joint(*hp[4])
     J[f'thumb0_{tag}'] = joint(*hp[1])
+for k in J:
+    J[k] = Vector((J[k].x * float(widen(J[k].z)), J[k].y, J[k].z))   # 몸을 넓힌 만큼 어깨·팔꿈치·손목 x 도 같이 옮긴다
 for k, v in J.items():
     log(f'  {k:16s} ({v.x:+.3f}, {v.y:+.3f}, {v.z:+.3f})')
+
+
+# ───────────────────────── 3-0. 코 다듬기
+# TRELLIS 코는 큼직한 공이라 그림자가 세게 진다. 레퍼런스 코는 뺨선을 거의 안 넘는 작은 혹이다.
+# 코끝(눈 중심과 입 사이에서 가장 앞쪽 정점) 반경 NOSE_R 안의 앞쪽 돌출을 뺨 고리(NOSE_R~NOSE_R2)에 맞춘 평면 기준으로 NOSE_K 배로 줄인다
+NOSE_R, NOSE_R2, NOSE_K = 0.09, 0.13, 0.5
+
+
+def soften_nose():
+    if not F:
+        return
+    _, ez = px_to_model(512, (F[133][1] + F[362][1]) / 2)
+    _, mz = px_to_model(512, F[13][1])
+    ez, mz = to_app(0, 0, ez).z, to_app(0, 0, mz).z
+    P_ = coords()
+    cand = np.nonzero((np.abs(P_[:, 0]) < 0.25) & (P_[:, 2] > mz) & (P_[:, 2] < ez) & (P_[:, 1] < 0.0))[0]
+    if not len(cand):
+        return
+    tip = P_[cand[np.argmin(P_[cand, 1])]]
+    d = np.linalg.norm(P_ - tip, axis=1)
+    ring = (d >= NOSE_R) & (d <= NOSE_R2) & (P_[:, 1] < 0.12)
+    if ring.sum() < 10:
+        log('nose: 뺨 고리 점이 모자라 건너뜀')
+        return
+    # 뺨 평면 y = a x + b z + c (최소제곱)
+    A = np.c_[P_[ring, 0], P_[ring, 2], np.ones(ring.sum())]
+    coef = np.linalg.lstsq(A, P_[ring, 1], rcond=None)[0]
+    inner = d < NOSE_R
+    plane_y = P_[:, 0] * coef[0] + P_[:, 2] * coef[1] + coef[2]
+    fwd = plane_y - P_[:, 1]                       # 평면보다 앞(-y)으로 나온 양
+    t = np.clip(d / NOSE_R, 0, 1)
+    k = NOSE_K + (1 - NOSE_K) * (t * t * (3 - 2 * t))   # 코끝 0.55 → 반경에서 1.0
+    newy = np.where(inner & (fwd > 0), plane_y - fwd * k, P_[:, 1])
+    P_[:, 1] = newy
+    body.data.vertices.foreach_set('co', P_.astype(np.float32).ravel())
+    body.data.update()
+    log(f'nose: tip ({tip[0]:+.3f},{tip[1]:+.3f},{tip[2]:+.3f}), moved {int((inner & (fwd > 0)).sum())} verts, max pullback {float((fwd * (1 - k))[inner].max()):.3f}')
+
+
+# 코 다듬기는 코 모양(공 → 작은 혹)이 눈에 띄는 얼굴 영역만 바꾸므로 BVH(관절·얼굴 점 깊이)를 다시 만든다
+def coords():
+    a = np.empty(len(body.data.vertices) * 3, np.float32)
+    body.data.vertices.foreach_get('co', a)
+    return a.reshape(-1, 3).astype(np.float64)
+
+
+soften_nose()
+bvh = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
+
+# ───────────────────────── 3a. 소매 중심선으로 팔 관절 다듬기
+# MediaPipe 어깨·팔꿈치·손목은 실루엣 바깥쪽에 찍혀 있어서 뼈가 소매 밖으로 나간다.
+# 표면을 고르게 뿌린 점으로 높이(z)마다 소매 바깥 끝과 깊이 평균을 재서 중심선을 만든다.
+def surface_samples(n=300000, seed=0):
+    me = body.data
+    me.calc_loop_triangles()
+    tri = np.array([t.vertices[:] for t in me.loop_triangles])
+    a = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get('co', a)
+    Pm = a.reshape(-1, 3).astype(np.float64)
+    A, B, C_ = Pm[tri[:, 0]], Pm[tri[:, 1]], Pm[tri[:, 2]]
+    area = np.linalg.norm(np.cross(B - A, C_ - A), axis=1)
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(tri), n, p=area / area.sum())
+    r1, r2 = np.sqrt(rng.random(n)), rng.random(n)
+    return A[idx] * (1 - r1)[:, None] + B[idx] * (r1 * (1 - r2))[:, None] + C_[idx] * (r1 * r2)[:, None]
+
+
+SLEEVE_R = 0.19   # 소매 반지름 (정면 렌더 폭에서 잰 값)
+
+
+def sleeve_center(samples, side, z):
+    """높이 z 에서 소매 중심 (x, y). 가장 바깥 소매 한 가닥만 본다 (몸통과 붙는 윗부분도 바깥 끝은 깨끗하다)"""
+    m = (np.abs(samples[:, 2] - z) < 0.03) & (side * samples[:, 0] > 0.3)
+    xs = side * samples[m, 0]
+    xmax = np.percentile(xs, 99.7)
+    q = samples[m][xs > xmax - 0.30]
+    return side * (xmax - SLEEVE_R), float(q[:, 1].mean())
+
+
+samp = surface_samples()
+# 메시는 좌우 대칭이라 높이는 L 랜드마크로 통일한다 (R 랜드마크는 어깨가 더 낮게 찍혀 있다)
+zS = {t: J['shoulder_L'].z for t in 'LR'}
+zE = {t: J['elbow_L'].z for t in 'LR'}
+for side, tag in ((1, 'L'), (-1, 'R')):
+    for key, z in (('shoulder', zS[tag]), ('elbow', zE[tag])):
+        x, y = sleeve_center(samp, side, z)
+        log(f'{key}_{tag}: landmark ({J[f"{key}_{tag}"].x:+.3f}, {J[f"{key}_{tag}"].y:+.3f}) -> sleeve center ({x:+.3f}, {y:+.3f}) @z={z:.3f}')
+        J[f'{key}_{tag}'] = Vector((x, y, z))
+    J[f'clavicle_{tag}'] = Vector((side * 0.18, J['chest'].y, J[f'shoulder_{tag}'].z + 0.02))
+
+# ───────────────────────── 3b. 색 샘플 → 손 자르기
+def vertex_colors():
+    """정점마다 텍스처 색 (sRGB 0..1). 정점에 붙은 모서리 UV 색의 평균"""
+    me = body.data
+    img = next(n.image for m in me.materials for n in m.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image)
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)[:, :, :3]
+    nl = len(me.loops)
+    uv = np.empty(nl * 2, np.float32)
+    me.uv_layers.active.data.foreach_get('uv', uv)
+    uv = uv.reshape(-1, 2) % 1.0
+    vi = np.empty(nl, np.int32)
+    me.loops.foreach_get('vertex_index', vi)
+    c = px[np.clip((uv[:, 1] * h).astype(int), 0, h - 1), np.clip((uv[:, 0] * w).astype(int), 0, w - 1)]
+    c = np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(np.maximum(c, 1e-6), 1 / 2.4) - 0.055)
+    acc = np.zeros((len(me.vertices), 3))
+    cnt = np.zeros(len(me.vertices))
+    np.add.at(acc, vi, c)
+    np.add.at(cnt, vi, 1)
+    return acc / np.maximum(cnt, 1)[:, None]
+
+
+_TEX = {}
+
+
+def uv_srgb(uvs):
+    """UV 목록 → 텍스처 색 (sRGB 0..1). 이미지는 처음 한 번만 읽어 둔다"""
+    if 'px' not in _TEX:
+        img = next(n.image for m in body.data.materials for n in m.node_tree.nodes if n.type == 'TEX_IMAGE' and n.image)
+        w, h = img.size
+        px = np.empty(w * h * 4, np.float32)
+        img.pixels.foreach_get(px)
+        _TEX['px'], _TEX['wh'] = px.reshape(h, w, 4)[:, :, :3], (w, h)
+    w, h = _TEX['wh']
+    uv = np.asarray(uvs, np.float64).reshape(-1, 2) % 1.0
+    c = _TEX['px'][np.clip((uv[:, 1] * h).astype(int), 0, h - 1), np.clip((uv[:, 0] * w).astype(int), 0, w - 1)]
+    return c   # img.pixels 는 이미 sRGB 값 그대로다 (vertex_colors 는 한 번 더 올려서 밝게 나온다)
+
+
+NAVY = np.array([0.165, 0.18, 0.275])   # 재킷 감청 (구운 색 표본)
+
+
+def navy_uv(uvs):
+    """후보 UV 중 재킷 감청에 가장 가까운 한 점. 덮개 면이 피부·머리 칸을 밟지 않게 한다"""
+    c = uv_srgb(uvs)
+    d = np.sqrt(((c - NAVY) ** 2).sum(axis=1))
+    k = int(np.argmin(d))
+    navy_uv.dist = float(d[k])
+    return uvs[k]
+
+
+def coords():
+    me = body.data
+    a = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get('co', a)
+    return a.reshape(-1, 3).astype(np.float64)
+
+
+def is_skin(c):
+    # 피부색: 복숭아(텍스처 보정 후)와 예전 분홍 둘 다 잡는다
+    return (c[:, 0] > 0.6) & (c[:, 0] - c[:, 1] > 0.1) & (c[:, 0] - c[:, 2] > 0.12)
+
+
+Pv, Cv = coords(), vertex_colors()
+# 손 색: 얼굴(머리 높이)의 피부 정점 색 중앙값에 맞춘다
+_sk = is_skin(Cv) & (Pv[:, 2] > 1.4)
+HA.SKIN = tuple(float(x) for x in np.median(Cv[_sk], axis=0)) if _sk.sum() > 100 else None
+log('skin color (sRGB 255):', None if HA.SKIN is None else tuple(round(x * 255) for x in HA.SKIN), 'verts', int(_sk.sum()))
+LINER_DEPTH = 0.50   # 소매 속 안감을 걷어 내는 깊이 (팔꿈치 근처까지)
+LINER_R = 0.125   # 소매 속 안감 반지름 (소매 겉 반지름 0.19 보다 안쪽)
+CUFF_BACK = 0.04   # 자르는 면을 소매 끝에서 소매 안쪽으로 들이는 양
+cuff_info = {}
+for side, tag in ((1, 'L'), (-1, 'R')):
+    E = np.array(J[f'elbow_{tag}'])
+    x, y = sleeve_center(samp, side, 0.34)
+    fa = np.array((x, y, 0.34)) - E
+    fa /= np.linalg.norm(fa)
+    t = (Pv - E) @ fa
+    radial = np.linalg.norm(Pv - (E + t[:, None] * fa), axis=1)
+    sk = is_skin(Cv) & (radial < 0.3) & (t > 0.3)
+    t_skin = float(np.percentile(t[sk], 3))
+    cuff_info[tag] = dict(t_skin=t_skin, fa=fa)
+    old_w = Vector(J[f'wrist_{tag}'])
+    Wn = Vector(E + fa * (t_skin - 0.02))
+    shift = Wn - old_w
+    for k in ('knuckle', 'finger_mid', 'finger_tip', 'thumb1', 'thumb2', 'thumb_tip', 'thumb0'):
+        J[f'{k}_{tag}'] = J[f'{k}_{tag}'] + shift   # 임시 손 뼈는 손목과 함께 옮긴다
+    J[f'wrist_{tag}'] = Wn
+    J[f'hand_{tag}'] = Wn.copy()
+    log(f'cuff {tag}: skin starts t={t_skin:.3f} z={(E + fa * t_skin)[2]:.3f}, skin verts {int(sk.sum())}, wrist -> ({Wn.x:+.3f},{Wn.y:+.3f},{Wn.z:+.3f})')
+
+
+def cut_hand(tag):
+    """소매 끝 안쪽에서 팔 축에 수직인 면으로 손 쪽을 잘라 낸다. 손목 관절은 소매 끝으로 옮긴다"""
+    E = Vector(J[f'elbow_{tag}'])
+    fa = Vector(cuff_info[tag]['fa'])
+    t_cut = cuff_info[tag]['t_skin'] - CUFF_BACK
+    co = E + fa * t_cut
+
+    def region(p):
+        t = (p - E).dot(fa)
+        return abs(t - t_cut) < 0.6 and (p - E - fa * t).length < 0.45
+
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    faces = [f for f in bm.faces if all(region(v.co) for v in f.verts)]
+    edges = list({e for f in faces for e in f.edges})
+    verts = list({v for f in faces for v in f.verts})
+    bmesh.ops.bisect_plane(bm, geom=verts + edges + faces, plane_co=co, plane_no=fa)
+    dead = [v for v in bm.verts if (v.co - co).dot(fa) > 1e-5 and (v.co - E - fa * (v.co - E).dot(fa)).length < 0.45]
+    bmesh.ops.delete(bm, geom=dead, context='VERTS')
+    # 소매 속 안감(피부 껍질) 가장자리가 잘린 채 들쭉날쭉 보이므로 소매 끝 근처 안쪽 껍질을 걷어 낸다. 새 손의 손목이 채운다
+    liner = [v for v in bm.verts if -LINER_DEPTH < (v.co - co).dot(fa) <= 1e-5 and (v.co - E - fa * (v.co - E).dot(fa)).length < LINER_R]
+    bmesh.ops.delete(bm, geom=liner, context='VERTS')
+    log(f'hand {tag} liner removed: {len(liner)} verts')
+    # 잘린 가장자리 띠는 UV 가 줄무늬 칸에 걸려 해칭처럼 보인다. 바로 안쪽 소매 겉면의 UV 한 점(감청)으로 모은다
+    uvl = bm.loops.layers.uv.active
+
+    def tt(f):
+        return (f.calc_center_median() - E).dot(fa)
+
+    def rr(f):
+        c_ = f.calc_center_median() - E
+        return (c_ - fa * c_.dot(fa)).length
+    ref = [f for f in bm.faces if t_cut - 0.16 < tt(f) < t_cut - 0.10 and 0.17 < rr(f) < 0.30]
+    band = [f for f in bm.faces if t_cut - 0.10 <= tt(f) < t_cut + 1e-3 and rr(f) < 0.30]
+    if ref and band:
+        top = max(ref, key=lambda f: f.calc_center_median().z)   # 소매 윗면 한 칸의 UV (재킷 감청)
+        us = [l[uvl].uv.copy() for l in top.loops]
+        u0 = sum(us, type(us[0])((0, 0))) / len(us)
+        for f in band:
+            for l in f.loops:
+                l[uvl].uv = u0
+    log(f'hand {tag} cuff band uv fix: {len(band)} faces (ref {len(ref)})')
+    # 잘리고 남은 떠돌이 조각 정리
+    bm.verts.ensure_lookup_table()
+    bm.to_mesh(body.data)
+    bm.free()
+    log(f'hand {tag} cut: removed {len(dead)} verts, plane t={t_cut:.3f}')
+
+
+for tag in ('L', 'R'):
+    cut_hand(tag)
+body.data.update()
+bm = bmesh.new()
+bm.from_mesh(body.data)
+bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+bm.to_mesh(body.data)
+bm.free()
+
+
+def components():
+    """연결 조각 목록 (정점 인덱스 리스트)"""
+    bm_ = bmesh.new()
+    bm_.from_mesh(body.data)
+    seen, out = set(), []
+    for v in bm_.verts:
+        if v.index in seen:
+            continue
+        comp, stack = [], [v]
+        seen.add(v.index)
+        while stack:
+            x = stack.pop()
+            comp.append(x.index)
+            for e in x.link_edges:
+                o = e.other_vert(x)
+                if o.index not in seen:
+                    seen.add(o.index)
+                    stack.append(o)
+        out.append(comp)
+    bm_.free()
+    return sorted(out, key=len, reverse=True)
+
+
+def remove_tiny(limit=40):
+    """잘린 손가락 조각 같은 작은 떠돌이는 지운다 (머리카락 가닥은 훨씬 크다)"""
+    tiny = [i for comp in components() if len(comp) < limit for i in comp]
+    if tiny:
+        bm = bmesh.new()
+        bm.from_mesh(body.data)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.verts[i] for i in tiny], context='VERTS')
+        bm.to_mesh(body.data)
+        bm.free()
+        log('removed tiny fragments:', len(tiny), 'verts')
+
+
+
+
+def strip_inner_skin():
+    """소매 속 피부 껍질을 걷어 낸다. 팔을 들면 겨드랑이·소매 입구로 분홍 껍질이 비친다. 손은 새 메시가 대신하므로 팔 영역의 피부색 정점은 전부 안쪽 껍질이다"""
+    P_, C_ = coords(), vertex_colors()
+    warm = (C_[:, 0] > 0.22) & (C_[:, 0] > C_[:, 1]) & (C_[:, 0] - C_[:, 2] > 0.08)   # 그늘진 갈색 피부도 포함
+    kill = (is_skin(C_) | warm) & (np.abs(P_[:, 0]) > 0.25) & (P_[:, 2] < 1.20)
+    bm_ = bmesh.new()
+    bm_.from_mesh(body.data)
+    bm_.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm_, geom=[bm_.verts[i] for i in np.nonzero(kill)[0]], context='VERTS')
+    bm_.to_mesh(body.data)
+    bm_.free()
+    log('inner skin shell removed:', int(kill.sum()), 'verts')
+
+
+strip_inner_skin()
+remove_tiny()
+Pc = coords()
+for comp in components()[:12]:
+    c = Pc[comp].mean(0)
+    log(f'component {len(comp):6d} verts centroid ({c[0]:+.2f},{c[1]:+.2f},{c[2]:+.2f})')
+log('after cut: verts', len(body.data.vertices), 'faces', len(body.data.polygons))
+
+# ───────────────────────── 3b2. 겉에서 안 보이는 안쪽 껍질 지우기
+# TRELLIS 메시는 재킷 안쪽에 피부·안감 껍질이 더 들어 있다. 팔을 들면 이게 겨드랑이 구멍으로 분홍 조각으로 튀어나온다.
+# 정점에서 사방(피보나치 구)으로 레이를 쏴서 하나도 못 빠져나가는 정점만 안쪽으로 보고, 세 정점이 다 안쪽인 면을 지운다.
+def prune_hidden(n_dirs=24, eps=0.004):
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    bm.verts.ensure_lookup_table()
+    tree = BVHTree.FromBMesh(bm)
+    k = np.arange(n_dirs) + 0.5
+    phi = np.arccos(1 - 2 * k / n_dirs)
+    th = math.pi * (1 + 5 ** 0.5) * k
+    dirs = [Vector((math.cos(t) * math.sin(p), math.sin(t) * math.sin(p), math.cos(p))) for t, p in zip(th, phi)]
+    hidden = []
+    for v in bm.verts:
+        ok = False
+        for d in dirs:
+            if tree.ray_cast(v.co + d * eps, d, 8.0)[0] is None:
+                ok = True
+                break
+        if not ok:
+            hidden.append(v)
+    hid = {v.index for v in hidden}
+    dead_faces = [f for f in bm.faces if all(v.index in hid for v in f.verts)]
+    bmesh.ops.delete(bm, geom=dead_faces, context='FACES')
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+    bm.to_mesh(body.data)
+    bm.free()
+    log(f'prune hidden: {len(hidden)} hidden verts, removed {len(dead_faces)} faces')
+
+
+if '--prune' in argv:
+    prune_hidden()
+
+# ───────────────────────── 3c. 겨드랑이 접촉면 끊기
+# 팔(소매 통)과 몸통은 옆구리에서 얇은 막으로 붙어 한 덩어리로 나왔다. 팔을 들면 이 막이 길게 늘어난다.
+# 팔 면과 몸통 면 사이 모서리를 끊어(정점 복제) 두 껍질을 따로 움직이게 한다. 겨드랑이 꼭대기(ZTOP) 위는 이어 둔다.
+ZTOP = 1.12     # 이 높이 아래에서만 끊는다 (겨드랑이 꼭대기)
+ZLOW = 0.38     # 이 아래는 팔과 몸통 사이가 벌어져 있다
+SPLIT_THR = 0.02   # 소매 겉면에서 이만큼까지를 팔 면으로 본다
+CHAIN_CAPS = False   # 모서리 고리를 메우는 방식은 팔을 들면 막이 늘어나 쓰지 않는다 (cap_holes)
+HOLE_X, HOLE_Z, HOLE_SIDES = 0.35, (0.15, 1.30), 4000   # 옆구리 구멍 메우기 범위
+FACING_MIN = float(opt('--facing', -2.0))   # 법선 방향 시험 (TRELLIS 면 방향이 안쪽 껍질에서 뒤집혀 있어 기본은 끈다)
+
+
+def arm_dist_e(P_):
+    """점들의 팔 축까지 소매 겉면 기준 바깥 거리 e (양팔 중 가까운 쪽), 어느 쪽 팔인지, 축에서 바깥으로 향하는 단위벡터"""
+    best = np.full(len(P_), 9.0)
+    which = np.zeros(len(P_), np.int8)
+    rad = np.zeros((len(P_), 3))
+    for side, tag in ((1, 'L'), (-1, 'R')):
+        Sv, Ev, Wv = (np.array(J[f'{n}_{tag}']) for n in ('shoulder', 'elbow', 'wrist'))
+        sc = np.array([1.0, W_.CFG['sy'], 1.0])
+        d1, _, o1 = W_.seg_dist(P_ * sc, Sv * sc, Ev * sc)
+        Wx = Wv + W_.unit(Wv - Ev) * 0.25   # weights.py 와 같이 소매 끝 아래까지 연장
+        d2, _, o2 = W_.seg_dist(P_ * sc, Ev * sc, Wx * sc)
+        e1, e2 = d1 - W_.CFG['r_up'], d2 - W_.CFG['r_fo']
+        u1 = e1 < e2
+        e = np.where(u1, e1, e2)
+        o = np.where(u1[:, None], o1, o2)
+        o = o / np.maximum(np.linalg.norm(o, axis=1, keepdims=True), 1e-9)
+        m = e < best
+        best[m], which[m], rad[m] = e[m], side, o[m]
+    return best, which, rad
+
+
+def face_is_arm(cen, nrm):
+    """소매 면: 소매 안쪽이거나, 소매 겉면 근처에서 법선이 팔 축 바깥을 향하는 면. 소매에 닿은 몸통 옆면은 법선이 팔 쪽을 보므로 빠진다"""
+    e, which, rad = arm_dist_e(cen)
+    facing = (nrm * rad).sum(axis=1)
+    thr = np.where(cen[:, 2] < 0.58, 0.06, SPLIT_THR)   # 소매 끝은 나팔처럼 벌어져 있다
+    is_arm = ((e < thr) & (facing > FACING_MIN)) | (e < -0.06)
+    low = cen[:, 2] <= ZLOW - 0.05
+    # 소매 끝 아래쪽 자락(z < ZLOW)은 소매 통 안쪽 면만 팔로 본다 (몸통 밑단 옆면은 소매 겉면에서 떨어져 있다)
+    is_arm = np.where(low, (e < 0.0) & (cen[:, 2] > 0.05), is_arm)
+    is_arm &= cen[:, 2] < ZTOP + 0.15
+    return is_arm, which
+
+
+def arm_axis_point(A, side):
+    """팔 모서리 묶음 중심에서 가장 가까운 소매 중심선(어깨-팔꿈치-손목) 위의 점"""
+    tag = 'L' if side > 0 else 'R'
+    c = sum((v.co for e in A for v in e.verts), Vector()) / (2 * len(A))
+    best, bd = None, 1e9
+    pts = [J[f'shoulder_{tag}'], J[f'elbow_{tag}'], J[f'wrist_{tag}']]
+    for a, b in zip(pts[:-1], pts[1:]):
+        ab = b - a
+        t = max(0.0, min(1.0, (c - a).dot(ab) / ab.length_squared))
+        q = a + ab * t
+        if (q - c).length < bd:
+            best, bd = q, (q - c).length
+    return best
+
+
+def _cls(ed, lay):
+    return ed.link_faces[0][lay]
+
+
+def _fill_loop(bm, edges, lay, cls_val, uvl, apex=None):
+    """닫힌 모서리 고리를 메우고 새 면에 분류·재킷 감청 UV 를 준다. apex 가 있으면 그 점으로 부채꼴, 못 메워도 부채꼴로 덮는다"""
+    newf = []
+    if apex is None:
+        res = bmesh.ops.holes_fill(bm, edges=edges, sides=HOLE_SIDES)
+        newf = list(res['faces'])
+    if not newf:
+        vs = {v for ed in edges for v in ed.verts}
+        c = Vector(apex) if apex is not None else sum((v.co for v in vs), Vector()) / len(vs)
+        cv = bm.verts.new(c)
+        for ed in edges:
+            if not ed.is_boundary:
+                continue
+            lp = next(l for l in ed.link_faces[0].loops if l.edge is ed)
+            try:
+                newf.append(bm.faces.new((lp.link_loop_next.vert, lp.vert, cv)))
+            except ValueError:
+                pass
+    for f in newf:
+        us = [l[uvl].uv.copy() for v in f.verts for l in v.link_loops if l.face is not f]
+        if us:
+            u = navy_uv(us)
+            for l in f.loops:
+                l[uvl].uv = u
+            if '--dbgcap' in argv and f is newf[0]:
+                log('CAP uv', tuple(u), 'color', tuple(np.round(uv_srgb([u])[0] * 255)), 'cands', len(us))
+        f[lay] = cls_val
+        f.smooth = True
+    return len(newf)
+
+
+def cap_holes(bm, lay):
+    """옆구리 구멍을 메운다. 팔이 떨어져 나간 자리의 경계 고리는 몸통 모서리와 팔 모서리가 이어진 하나의 고리다.
+    그대로 메우면 팔과 몸통 사이에 막이 걸려 팔을 들 때 늘어난다. 그래서 고리를 둘로 나눠
+    (몸통 모서리 + 팔 모서리의 복제본) 와 (팔 모서리 + 몸통 모서리의 복제본) 을 따로 메운다.
+    복제본은 같은 자리에 있어서 바인드 자세에서는 겹치고, 팔을 들면 각자 제 몸을 따라간다"""
+    bm.edges.ensure_lookup_table()
+    be = [ed for ed in bm.edges if ed.is_boundary
+          and all(abs(v.co.x) > HOLE_X and HOLE_Z[0] < v.co.z < HOLE_Z[1] for v in ed.verts)]
+    par = {}
+
+    def fnd(a):
+        while par.setdefault(a, a) != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+    for ed in be:
+        par[fnd(ed.verts[0].index)] = fnd(ed.verts[1].index)
+    comps = {}
+    for ed in be:
+        comps.setdefault(fnd(ed.verts[0].index), []).append(ed)
+    uvl = bm.loops.layers.uv.active
+    made = 0
+    for eds in comps.values():
+        T = [e for e in eds if _cls(e, lay) == 0]
+        A = [e for e in eds if _cls(e, lay) != 0]
+        per = sum(e.calc_length() for e in eds)
+        if '--dbgcap' in argv:
+            log(f'CAP comp edges {len(eds)} (torso {len(T)}, arm {len(A)}) per {per:.2f}')
+        # 둘레 이웃 면이 재킷 감청이 아니면(속 피부·셔츠 껍질의 구멍) 메우지 않는다
+        navy_uv([l[uvl].uv.copy() for e in eds for l in e.link_faces[0].loops])
+        if navy_uv.dist > 0.12:
+            continue
+        if T and A:
+            tv = {v for e in T for v in e.verts}
+            av = {v for e in A for v in e.verts}
+            # 몸통 쪽: 몸통 모서리 + 팔 모서리 복제본
+            cp = {v: (v if v in tv else bm.verts.new(v.co)) for v in av}
+            ne = []
+            for e in A:
+                a, b = cp[e.verts[0]], cp[e.verts[1]]
+                try:
+                    ne.append(bm.edges.new((a, b)))
+                except ValueError:
+                    ne.append(bm.edges.get((a, b)))
+            made += _fill_loop(bm, T + [x for x in ne if x], lay, 0, uvl)
+            # 팔 쪽: 소매 터진 자리는 소매 중심선 위 한 점으로 모으는 뿔로 닫는다 (납작한 막이면 팔을 들 때 날개처럼 달린다)
+            arm_cls = _cls(A[0], lay)
+            made += _fill_loop(bm, A, lay, arm_cls, uvl, apex=arm_axis_point(A, arm_cls))
+        elif T:
+            made += _fill_loop(bm, T, lay, 0, uvl)
+        else:
+            made += _fill_loop(bm, A, lay, _cls(A[0], lay), uvl, apex=arm_axis_point(A, _cls(A[0], lay)))
+    return made
+
+
+
+
+WALL_Z, WALL_Y, WALL_BACK, FLAP_MARGIN = (0.26, 1.18), (-0.42, 0.42), 0.035, 0.07   # 옆구리 벽 패치: 높이 범위, 앞뒤(y) 범위, 안쪽 깊이, 막 찌꺼기 한계
+
+
+def wall_patch(bm, lay):
+    """소매가 떨어져 나간 자리의 옆구리 벽을 새로 만든다 (몸통 벽 높이장 x(y, z)).
+    창(높이 WALL_Z × 앞뒤 WALL_Y) 위·아래 바깥 띠에서 재킷 몸통의 y 별 바깥 x 윤곽을 재고, 창 안은 두 윤곽을 높이로 섞는다.
+    기존 벽과 겹쳐 깜박이지 않게 WALL_BACK 만큼 안쪽에 놓고, 창 안에서 벽 밖으로 삐져나온 막 찌꺼기는 지운다"""
+    z0, z1 = WALL_Z
+    y0, y1 = WALL_Y
+    nz, ny = int(round((z1 - z0) / 0.03)), int(round((y1 - y0) / 0.03))
+    ZZ, YY = np.linspace(z0, z1, nz + 1), np.linspace(y0, y1, ny + 1)
+    made = 0
+    uvl = bm.loops.layers.uv.active
+    for sd in (1, -1):
+        bm.verts.ensure_lookup_table()
+        allc = [v for v in bm.verts if v.link_loops and sd * v.co.x > 0.25 and z0 - 0.3 < v.co.z < z1 + 0.3]
+        cols = uv_srgb([v.link_loops[0][uvl].uv for v in allc])
+        navy = np.sqrt(((cols - NAVY) ** 2).sum(axis=1)) < 0.12
+        xyz = np.array([[v.co.x * sd, v.co.y, v.co.z] for v in allc])
+        arm_v = np.array([any(f[lay] != 0 for f in v.link_faces) for v in allc])
+        good = navy & ~arm_v
+
+        def profile(zlo, zhi):
+            """높이 띠 [zlo, zhi] 에서 y 별 바깥 x (상위 15% 평균), 빈 y 는 보간"""
+            m = good & (xyz[:, 2] > zlo) & (xyz[:, 2] < zhi)
+            out = np.full(ny + 1, np.nan)
+            for i, y in enumerate(YY):
+                sel = m & (np.abs(xyz[:, 1] - y) < 0.03)
+                if sel.sum() >= 3:
+                    xs = np.sort(xyz[sel, 0])
+                    out[i] = xs[int(len(xs) * 0.85):].mean()
+            ok = ~np.isnan(out)
+            return np.interp(YY, YY[ok], out[ok]) if ok.sum() >= 3 else None
+        top, bot = profile(z1 + 0.01, z1 + 0.20), profile(z0 - 0.20, z0 - 0.01)
+        if top is None or bot is None:
+            log('wall patch: 윤곽을 못 쟀다, 건너뜀')
+            continue
+        Xw = np.array([[bot[j] * (1 - (ZZ[i] - z0) / (z1 - z0)) + top[j] * ((ZZ[i] - z0) / (z1 - z0)) for j in range(ny + 1)] for i in range(nz + 1)])
+        grid = {}
+        for i in range(nz + 1):
+            for j in range(ny + 1):
+                grid[i, j] = bm.verts.new(Vector((sd * (Xw[i, j] - WALL_BACK), YY[j], ZZ[i])))
+        u = navy_uv([v.link_loops[0][uvl].uv.copy() for v in np.array(allc, dtype=object)[good][:3000]])
+        for i in range(nz):
+            for j in range(ny):
+                a_, b_, c_, d_ = grid[i, j], grid[i, j + 1], grid[i + 1, j + 1], grid[i + 1, j]
+                quad = (a_, b_, c_, d_) if sd > 0 else (a_, d_, c_, b_)   # 법선이 바깥(sd*x)을 보게
+                for tri in ((quad[0], quad[1], quad[2]), (quad[0], quad[2], quad[3])):
+                    try:
+                        f = bm.faces.new(tri)
+                    except ValueError:
+                        continue
+                    f.smooth = True
+                    f[lay] = 0
+                    for l in f.loops:
+                        l[uvl].uv = u
+                    made += 1
+        gv = set(grid.values())
+        dead = []
+        for f in bm.faces:
+            if f[lay] != 0 or any(v in gv for v in f.verts):
+                continue
+            c = f.calc_center_median()
+            cx = c.x * sd
+            if cx < 0.6 or not (z0 < c.z < z1) or not (-0.3 < c.y < 0.3):
+                continue
+            i = min(nz, max(0, int(round((c.z - z0) / (z1 - z0) * nz))))
+            j = min(ny, max(0, int(round((c.y - y0) / (y1 - y0) * ny))))
+            if cx > Xw[i, j] + FLAP_MARGIN:
+                dead.append(f)
+        bmesh.ops.delete(bm, geom=dead, context='FACES')
+        log(f'wall patch side {sd:+d}: grid {nz}x{ny}, x {Xw.min():.2f}..{Xw.max():.2f}, removed {len(dead)} faces')
+    return made
+
+
+def split_arms():
+    body.data.validate(verbose=False)   # 퇴화 면을 먼저 정리해 면 번호를 고정한다
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    bm.faces.ensure_lookup_table()
+    cen = np.array([f.calc_center_median()[:] for f in bm.faces])
+    nrm = np.array([f.normal[:] for f in bm.faces])
+    is_arm, which = face_is_arm(cen, nrm)
+    if '--dbgcls' in argv:
+        m = (np.abs(cen[:, 0] - 0.86) < 0.08) & (cen[:, 2] > 0.30) & (cen[:, 2] < 0.42) & (np.abs(cen[:, 1] + 0.16) < 0.06)
+        e_, _, _ = arm_dist_e(cen)
+        log(f'DBGCLS faces {int(m.sum())} arm {int(is_arm[m].sum())} e mean {e_[m].mean():.3f} min {e_[m].min():.3f} max {e_[m].max():.3f} z mean {cen[m, 2].mean():.3f}')
+        for i in np.nonzero(m)[0][:8]:
+            log('DBGCLS', tuple(np.round(cen[i], 3)), 'e', round(float(e_[i]), 3), 'arm', bool(is_arm[i]))
+    # 고립된 낱장 분류를 이웃 다수결로 정리한다 (분류 경계가 들쭉날쭉하면 떨어진 조각이 생긴다)
+    nbr = [[g.index for e in f.edges for g in e.link_faces if g is not f] for f in bm.faces]
+    for _ in range(4):
+        new_ = is_arm.copy()
+        for i, ns in enumerate(nbr):
+            if not ns:
+                continue
+            k = sum(1 for j in ns if is_arm[j])
+            if is_arm[i] and k * 2 < len(ns) - 0.5:
+                new_[i] = False
+            elif (not is_arm[i]) and k * 2 > len(ns) + 0.5:
+                new_[i] = True
+        is_arm = new_
+    lay = bm.faces.layers.int.new('arm_cls')   # 면 속성으로 남겨 두면 뒤에서 면을 지워도 따라간다
+    bm.faces.ensure_lookup_table()
+    for f in bm.faces:
+        f[lay] = int(which[f.index]) if is_arm[f.index] else 0
+    cls = {f.index: bool(is_arm[f.index]) for f in bm.faces}
+    cut = []
+    for ed in bm.edges:
+        if len(ed.link_faces) != 2:
+            continue
+        a, b = ed.link_faces
+        if cls[a.index] != cls[b.index] and 0.08 < (ed.verts[0].co.z + ed.verts[1].co.z) / 2 < ZTOP:
+            cut.append(ed)
+    bmesh.ops.split_edges(bm, edges=cut)
+    # 팔 면과 몸통 면이 모서리 없이 꼭짓점 하나로만 닿는 곳이 남는다. 그런 꼭짓점도 면 묶음별로 갈라 준다
+    bm.verts.ensure_lookup_table()
+    pinch = [v for v in bm.verts if 0.08 < v.co.z < ZTOP and abs(v.co.x) > 0.3
+             and len({cls[g.index] for g in v.link_faces}) > 1]
+    if pinch:
+        bmesh.ops.split_edges(bm, edges=[], verts=pinch, use_verts=True)
+    log(f'pinch verts split: {len(pinch)}')
+    # 팔이 떠나면 옆구리 벽에 구멍이 남는다 (TRELLIS 는 소매와 몸통을 한 겹으로 붙여 냈다). 몸통·팔을 따로 메운다
+    nf = 0 if ('--nocap' in argv or not CHAIN_CAPS) else cap_holes(bm, lay)
+    nf += 0 if '--nowall' in argv else wall_patch(bm, lay)
+    if '--dbgloops' in argv:
+        log('--- after fill')
+        bm.edges.ensure_lookup_table()
+        be = [ed for ed in bm.edges if ed.is_boundary]
+        par = {}
+
+        def fnd(a):
+            while par.setdefault(a, a) != a:
+                par[a] = par[par[a]]
+                a = par[a]
+            return a
+        for ed in be:
+            par[fnd(ed.verts[0].index)] = fnd(ed.verts[1].index)
+        grp = {}
+        for ed in be:
+            grp.setdefault(fnd(ed.verts[0].index), []).append(ed)
+        for k, eds in sorted(grp.items(), key=lambda kv: -len(kv[1]))[:25]:
+            vs = [v.co for ed in eds for v in ed.verts]
+            xs = [v.x for v in vs]; zs = [v.z for v in vs]
+            cl = [ed.link_faces[0][lay] for ed in eds]
+            per = sum(ed.calc_length() for ed in eds)
+            log(f'LOOP edges {len(eds):4d} per {per:.2f} x[{min(xs):+.2f},{max(xs):+.2f}] z[{min(zs):.2f},{max(zs):.2f}] arm-edges {sum(1 for c in cl if c)} torso-edges {sum(1 for c in cl if not c)}')
+    bm.to_mesh(body.data)
+    bm.free()
+    log(f'armpit split: {len(cut)} edges, arm faces {int(is_arm.sum())}, hole patch faces {nf}')
+
+
+split_arms()
+remove_tiny()
+
+# ───────────────────────── 3d. 새 손 배치 (있으면)
+placed = HA.load_and_place(HAND_DIR, J, cuff_info, PALM_LEN, log) if USE_HAND else None
 
 # ───────────────────────── 4. 뼈대
 arm_data = bpy.data.armatures.new('navy_rig')
@@ -206,79 +892,93 @@ for tag in ('L', 'R'):
     bone(f'upper_arm_{tag}', J[f'shoulder_{tag}'], J[f'elbow_{tag}'], f'shoulder_{tag}', True)
     bone(f'forearm_{tag}', J[f'elbow_{tag}'], J[f'wrist_{tag}'], f'upper_arm_{tag}', True)
     bone(f'hand_{tag}', J[f'wrist_{tag}'], J[f'knuckle_{tag}'], f'forearm_{tag}', True)
-    bone(f'fingers1_{tag}', J[f'knuckle_{tag}'], J[f'finger_mid_{tag}'], f'hand_{tag}', True)
-    bone(f'fingers2_{tag}', J[f'finger_mid_{tag}'], J[f'finger_tip_{tag}'], f'fingers1_{tag}', True)
-    bone(f'thumb1_{tag}', J[f'thumb0_{tag}'], J[f'thumb2_{tag}'], f'hand_{tag}')
-    bone(f'thumb2_{tag}', J[f'thumb2_{tag}'], J[f'thumb_tip_{tag}'], f'thumb1_{tag}', True)
-# 손바닥 방향을 roll 로 맞춰 두면 three.js 쪽에서 손 기저를 읽기 쉽다: 뼈 Z 축이 앞(-Y, 카메라 쪽)을 보게 한다
+    if USE_HAND:
+        HA.add_bones(eb, placed[tag]['pts'], tag, J, bone)
+    else:
+        # 새 손이 오기 전 임시 손가락 뼈 (메시는 없다)
+        bone(f'fingers1_{tag}', J[f'knuckle_{tag}'], J[f'finger_mid_{tag}'], f'hand_{tag}', True)
+        bone(f'fingers2_{tag}', J[f'finger_mid_{tag}'], J[f'finger_tip_{tag}'], f'fingers1_{tag}', True)
+        bone(f'thumb1_{tag}', J[f'thumb0_{tag}'], J[f'thumb2_{tag}'], f'hand_{tag}')
+        bone(f'thumb2_{tag}', J[f'thumb2_{tag}'], J[f'thumb_tip_{tag}'], f'thumb1_{tag}', True)
+# 뼈 Z 축이 앞(-Y, 카메라 쪽)을 보게 roll 을 맞춘다
 for b in eb:
     b.align_roll(Vector((0, -1, 0)))
 bpy.ops.object.mode_set(mode='OBJECT')
 log('bones', len(arm_data.bones))
 
-# ───────────────────────── 5. 가중치: 복셀 대역 메시 → bone heat → 원래 메시로 옮김
-proxy = body.copy()
-proxy.data = body.data.copy()
-proxy.name = 'weight_proxy'
-bpy.context.scene.collection.objects.link(proxy)
-rm = proxy.modifiers.new('remesh', 'REMESH')
-rm.mode = 'VOXEL'
-rm.voxel_size = 0.025
-activate(proxy)
-bpy.ops.object.modifier_apply(modifier=rm.name)
-log('proxy faces', len(proxy.data.polygons))
-activate(proxy)
-arm.select_set(True)
-bpy.context.view_layer.objects.active = arm
-bpy.ops.object.parent_set(type='ARMATURE_AUTO')
-empty_groups = [g.name for g in proxy.vertex_groups if not any(g.index in [x.group for x in v.groups] for v in proxy.data.vertices[:2000])]
-log('proxy vgroups', len(proxy.vertex_groups))
+# ───────────────────────── 5. 가중치 (절차)
+bone_names = [b.name for b in arm_data.bones]
+Pv = coords()
+me = body.data
+ev = np.empty(len(me.edges) * 2, np.int32)
+me.edges.foreach_get('vertices', ev)
+Jn = {k: np.array(v) for k, v in J.items()}
 
-for b in arm_data.bones:
-    body.vertex_groups.new(name=b.name)
-dt = body.modifiers.new('xfer', 'DATA_TRANSFER')
-dt.object = proxy
-dt.use_vert_data = True
-dt.data_types_verts = {'VGROUP_WEIGHTS'}
-dt.vert_mapping = 'POLYINTERP_NEAREST'
-dt.layers_vgroup_select_src = 'ALL'
-dt.layers_vgroup_select_dst = 'NAME'
-activate(body)
-bpy.ops.object.modifier_apply(modifier=dt.name)
 
-# 머리 고정: 턱 아래 띠(band)부터 위는 head 1.0 (머리카락이 어깨 뼈에 끌려가지 않게)
-head_g = body.vertex_groups['head']
-z0 = J['head'].z - 0.12   # 이 아래는 원래 가중치
-z1 = J['head'].z + 0.04   # 이 위는 head 1.0
-groups = {g.index: g for g in body.vertex_groups}
-for v in body.data.vertices:
-    t = (v.co.z - z0) / (z1 - z0)
-    if t <= 0:
-        continue
-    t = min(1.0, t)
-    t = t * t * (3 - 2 * t)
-    for ge in v.groups:
-        g = groups[ge.group]
-        if g.name != 'head':
-            g.add([v.index], ge.weight * (1 - t), 'REPLACE')
-    head_g.add([v.index], max(t, 0.0) + sum(ge.weight for ge in v.groups if groups[ge.group].name == 'head') * (1 - t), 'REPLACE')
+def vertex_lock():
+    """겨드랑이 구간 정점: 팔 면에 붙어 있으면 그 팔 쪽(+1 L, -1 R), 아니면 0. 분류는 split_arms 가 면 속성으로 남긴 값"""
+    me_ = body.data
+    cls = np.zeros(len(me_.polygons), np.int32)
+    me_.attributes['arm_cls'].data.foreach_get('value', cls)
+    lock = np.zeros(len(me_.vertices), np.int8)
+    for p in np.nonzero(cls)[0]:
+        for v in me_.polygons[int(p)].vertices:
+            lock[v] = cls[p]
+    return lock
 
-activate(body)
-bpy.ops.object.vertex_group_normalize_all(lock_active=False)
-bpy.ops.object.vertex_group_limit_total(limit=4)
-bpy.ops.object.vertex_group_normalize_all(lock_active=False)
-unweighted = sum(1 for v in body.data.vertices if not any(ge.weight > 1e-4 for ge in v.groups))
-log('unweighted verts', unweighted)
 
-bpy.data.objects.remove(proxy)
+lock = vertex_lock()
+if '--dbgmix' in argv:
+    _pl = np.array([list(p_.vertices) for p_ in body.data.polygons if len(p_.vertices) == 3])
+    _lk = lock[_pl]
+    mixed = (_lk.max(1) != _lk.min(1)) | False
+    _c = Pv[_pl].mean(1)
+    log(f'MIX faces {int(mixed.sum())}')
+    for lo, hi in ((0, 0.3), (0.3, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.1), (1.1, 1.3)):
+        m = mixed & (_c[:, 2] >= lo) & (_c[:, 2] < hi) & (np.abs(_c[:, 0]) > 0.3)
+        log(f'MIX z[{lo},{hi}) {int(m.sum())}')
+    sel = np.nonzero(mixed & (np.abs(_c[:, 0]) > 0.3))[0]
+    # 면 크기 (긴 막)
+    ar = np.linalg.norm(np.cross(Pv[_pl[:, 1]] - Pv[_pl[:, 0]], Pv[_pl[:, 2]] - Pv[_pl[:, 0]]), axis=1) / 2
+    for i in sel[np.argsort(-ar[sel])][:12]:
+        log('MIX big', tuple(np.round(_c[i], 2)), 'area', round(float(ar[i]), 3), 'locks', _lk[i])
+Wt = W_.compute(Pv, Jn, bone_names, ev.reshape(-1, 2), lock=lock, zlow=ZLOW, ztop=ZTOP)
+
+
+def write_weights(obj, Wt, names):
+    obj.vertex_groups.clear()
+    vg = [obj.vertex_groups.new(name=n) for n in names]
+    for bi in range(len(names)):
+        col = Wt[:, bi]
+        for vi in np.nonzero(col > 1e-4)[0]:
+            vg[bi].add([int(vi)], float(col[vi]), 'REPLACE')
+
+
+write_weights(body, Wt, bone_names)
+log('unweighted verts', int((Wt.sum(axis=1) < 0.5).sum()), 'max influences', int((Wt > 1e-4).sum(axis=1).max()))
+
+for p in body.data.polygons:
+    p.use_smooth = True
+
 body.parent = arm
 mod = body.modifiers.new('Armature', 'ARMATURE')
 mod.object = arm
 
+hand_objs = []
+if USE_HAND:
+    for tag in ('L', 'R'):
+        ho = placed[tag]['obj']
+        Wh = HA.weights(ho, placed[tag]['pts'], J, tag, bone_names)
+        write_weights(ho, Wh, bone_names)
+        ho.parent = arm
+        hm = ho.modifiers.new('Armature', 'ARMATURE')
+        hm.object = arm
+        hand_objs.append(ho)
+        log(f'hand {tag} weighted: verts {len(ho.data.vertices)}, max influences {int((Wh > 1e-4).sum(axis=1).max())}')
+
 # 재질: 양면 (TRELLIS 면 방향이 다 맞지는 않는다)
 for m in body.data.materials:
     m.use_backface_culling = False
-
 # ───────────────────────── 얼굴 오버레이 위치 (head 뼈 기준이 아니라 앱 월드 좌표; three 가 bind 시점에 head 로컬로 바꾼다)
 face = {}
 if F:
@@ -301,6 +1001,7 @@ info = {
     'scale': S,
     'height': APP_H,
     'joints': {k: three(v) for k, v in J.items()},
+    'palm': ({t: three(placed[t]['palm']) for t in ('L', 'R')} if placed else None),
     'face': {k: {kk: (three(vv) if isinstance(vv, list) else round(vv, 4)) for kk, vv in d.items()} for k, d in face.items()},
 }
 OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -311,33 +1012,136 @@ for ob in bpy.context.selected_objects:
     ob.select_set(False)
 arm.select_set(True)
 body.select_set(True)
+for ho in hand_objs:
+    ho.select_set(True)
 bpy.ops.export_scene.gltf(filepath=str(OUT), export_format='GLB', use_selection=True, export_yup=True,
                           export_skins=True, export_animations=False, export_apply=False, export_extras=False)
 log('exported', OUT)
 
+
+if USE_HAND:
+    pass  # 새 손 붙이기는 rig/handattach.py (아래 hook)
+
+if WVIEW or PREVIEW:
+    import rigview as RV
+    from mathutils import Vector as V
+
+if WVIEW:
+    pal = np.array(RV.PALETTE)
+    pal = pal[np.arange(len(bone_names)) % len(pal)]
+    if opt('--wgroup'):   # 몸통=파랑, 어깨=노랑, 상완=빨강, 전완=초록, 손=흰색 (가중치 팔/몸통 구분 보기용)
+        gc = {'hips': (.2, .3, .9), 'spine': (.2, .3, .9), 'chest': (.35, .5, 1.0), 'neck': (.2, .8, .9), 'head': (.8, .8, .8),
+              'shoulder': (1, .9, .1), 'upper_arm': (1, .15, .1), 'forearm': (.1, .8, .2)}
+        pal = np.array([next((v for k, v in gc.items() if n.startswith(k)), (1, 1, 1)) for n in bone_names])
+    cols = Wt @ pal
+    RV.set_vertex_colors(body, cols)
+    vis = RV.bone_vis(arm)
+    cam = RV.setup_workbench(560, 'VERTEX')
+    for name, az, ctr, sc_ in (('front', 0, (0, 0, 1.5), 4.4), ('side', 90, (0, 0, 1.5), 4.4), ('back', 180, (0, 0, 1.5), 4.4),
+                               ('arm', 0, (0.75, 0, 0.95), 2.2), ('armside', 90, (0.7, 0, 0.95), 2.2), ('shoulder', 0, (0.4, 0, 1.3), 1.6)):
+        RV.snap(cam, f'{WVIEW}-{name}.png', az, ctr, sc_)
+    if opt('--wpose'):
+        RV.pose(arm, opt('--wpose'))
+        for k, (az, c, s_) in enumerate(((0, (0.9, 0, 0.8), 2.0), (-40, (0.9, 0, 0.8), 2.0), (60, (0.9, 0, 0.8), 2.0))):
+            RV.snap(cam, f'{WVIEW}-pose{k}.png', az, c, s_)
+    log('wview done')
+
+if '--dbgstretch' in argv:
+    import rigview as RV
+    RV.pose(arm, 'tpose')
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev_ = body.evaluated_get(dg).to_mesh()
+    pe = np.array([v.co[:] for v in ev_.vertices])
+    me_ = body.data
+    me_.calc_loop_triangles()
+    tri = np.array([t.vertices[:] for t in me_.loop_triangles])
+
+    def areas(Q):
+        return np.linalg.norm(np.cross(Q[tri[:, 1]] - Q[tri[:, 0]], Q[tri[:, 2]] - Q[tri[:, 0]]), axis=1) / 2
+    a0, a1 = areas(Pv), areas(pe)
+    # 가장 긴 모서리 늘어남
+    def maxedge(Q):
+        return np.max([np.linalg.norm(Q[tri[:, i]] - Q[tri[:, (i + 1) % 3]], axis=1) for i in range(3)], axis=0)
+    e0, e1 = maxedge(Pv), maxedge(pe)
+    ratio = e1 / np.maximum(e0, 1e-4)
+    names_ = [g.name for g in body.vertex_groups]
+    big = np.nonzero((e1 > 0.25) & (ratio > 3) & (np.abs(Pv[tri].mean(1)[:, 0]) > 0.3))[0]
+    log(f'STRETCH faces {len(big)}')
+    for i in big[np.argsort(-e1[big])][:20]:
+        vs = tri[i]
+        desc = []
+        for v in vs:
+            ws = sorted(((g.weight, names_[g.group]) for g in body.data.vertices[int(v)].groups), reverse=True)[:2]
+            desc.append('/'.join(f'{n}{w:.1f}' for w, n in ws))
+        log('STRETCH', tuple(np.round(Pv[tri[i]].mean(0), 2)), 'edge', round(float(e0[i]), 3), '->', round(float(e1[i]), 3), 'lock', lock[vs], desc)
+    # 가중치 구간별 (몸통 lock=0 인데 팔 가중치 가진 정점)
+    ua = np.zeros(len(Pv))
+    for nm in names_:
+        if nm.startswith(('upper_arm', 'shoulder', 'forearm')):
+            ua += Wt[:, bone_names.index(nm)]
+    m = (lock == 0) & (ua > 0.1) & (np.abs(Pv[:, 0]) > 0.4) & (Pv[:, 2] < 1.2)
+    log('TORSO-LOCK verts with arm weight', int(m.sum()))
+    for lo, hi in ((0, 0.4), (0.4, 0.7), (0.7, 1.0), (1.0, 1.12), (1.12, 1.2)):
+        mm = m & (Pv[:, 2] >= lo) & (Pv[:, 2] < hi)
+        log(f'  z[{lo},{hi}) {int(mm.sum())}')
+
+if opt('--dbgpose'):
+    import rigview as RV
+    RV.pose(arm, opt('--dbgpose'))
+    for n_ in ('shoulder_L', 'upper_arm_L', 'forearm_L', 'hand_L'):
+        pb_ = arm.pose.bones[n_]
+        log(f'POSE {n_}: head {tuple(round(x, 3) for x in pb_.head)} tail {tuple(round(x, 3) for x in pb_.tail)}')
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev_ = body.evaluated_get(dg).to_mesh()
+    pe = np.array([v.co[:] for v in ev_.vertices])
+    gi = {g.index: g.name for g in body.vertex_groups}
+    names_ = [g.name for g in body.vertex_groups]
+    sel = np.nonzero((pe[:, 0] > 0.75) & (pe[:, 2] < 1.0) & (pe[:, 2] > 0.4))[0]
+    log(f'POSE flap candidates {len(sel)}')
+    for i in sel[:40]:
+        v = body.data.vertices[int(i)]
+        ws = sorted(((g.weight, names_[g.group]) for g in v.groups), reverse=True)[:3]
+        log('POSE flapv bind', tuple(np.round(Pv[i], 2)), 'posed', tuple(np.round(pe[i], 2)), 'lock', int(lock[i]), 'e', round(float(arm_dist_e(Pv[[i]])[0][0]), 3), [(round(w, 2), n) for w, n in ws])
+    for nm in ('upper_arm_L', 'forearm_L'):
+        gidx = body.vertex_groups[nm].index
+        sel = [i for i, v in enumerate(body.data.vertices) if any(g.group == gidx and g.weight > 0.95 for g in v.groups)]
+        log(f'POSE {nm} pure verts {len(sel)}: bind mean {np.round(Pv[sel].mean(0), 3)} posed mean {np.round(pe[sel].mean(0), 3)}')
+
+if opt('--closeup'):
+    import rigview as RV
+    cam = RV.setup_eevee(720)
+    for p in body.data.polygons:
+        p.use_smooth = True
+    for nm in opt('--poses', 'bind').split(','):
+        RV.pose(arm, nm)
+        for k, (az, c, s_) in enumerate(((0, (0.9, 0, 0.3), 1.4), (-50, (0.9, 0, 0.3), 1.4), (90, (0.9, 0, 0.3), 1.4))):
+            RV.snap(cam, f'{opt("--closeup")}-{nm}-{k}.png', az, c, s_)
+
+if opt('--vc'):
+    # 임의 시점 렌더: --vc PREFIX --vcviews "az:cx:cy:cz:scale,..." --poses bind,tpose
+    import rigview as RV
+    cam = RV.setup_eevee(int(opt('--vcres', 720)))
+    for p in body.data.polygons:
+        p.use_smooth = True
+    for nm in opt('--poses', 'bind').split(','):
+        RV.pose(arm, nm)
+        for k, v in enumerate(opt('--vcviews').split(',')):
+            az, cx, cy, cz, sc_ = (float(x) for x in v.split(':'))
+            RV.snap(cam, f'{opt("--vc")}-{nm}-{k}.png', az, (cx, cy, cz), sc_)
+
 if PREVIEW:
-    # 확인용: 팔을 책상 쪽으로 구부린 포즈로 정면 렌더
-    pb = arm.pose.bones
-    for tag, s in (('L', 1), ('R', -1)):
-        pb[f'upper_arm_{tag}'].rotation_mode = 'XYZ'
-        pb[f'forearm_{tag}'].rotation_mode = 'XYZ'
-        pb[f'forearm_{tag}'].rotation_euler = (math.radians(-70), 0, 0)
-        pb[f'fingers1_{tag}'].rotation_mode = 'XYZ'
-        pb[f'fingers1_{tag}'].rotation_euler = (math.radians(30), 0, 0)
-    pb['head'].rotation_mode = 'XYZ'
-    pb['head'].rotation_euler = (0, 0, math.radians(20))
-    sc = bpy.context.scene
-    sc.render.engine = 'BLENDER_EEVEE'
-    sc.render.resolution_x = sc.render.resolution_y = 720
-    sc.view_settings.view_transform = 'Standard'
-    w = bpy.data.worlds.new('w'); sc.world = w; w.use_nodes = True
-    w.node_tree.nodes['Background'].inputs[0].default_value = (1, 1, 1, 1)
-    w.node_tree.nodes['Background'].inputs[1].default_value = 0.6
-    sun = bpy.data.objects.new('sun', bpy.data.lights.new('sun', 'SUN')); sun.data.energy = 3.0
-    sun.rotation_euler = (math.radians(50), 0, math.radians(-30)); sc.collection.objects.link(sun)
-    cam = bpy.data.objects.new('cam', bpy.data.cameras.new('cam')); sc.collection.objects.link(cam); sc.camera = cam
-    cam.data.lens = 85
-    cam.location = Vector((0, -14, 1.6)); cam.rotation_euler = (math.radians(87), 0, 0)
-    sc.render.filepath = str(Path(PREVIEW).resolve())
-    bpy.ops.render.render(write_still=True)
-    log('preview', PREVIEW)
+    if WVIEW:
+        bpy.data.objects.remove(vis)
+        body.data.color_attributes.remove(body.data.color_attributes['dbg'])
+    cam = RV.setup_eevee(480)
+    for p in body.data.polygons:
+        p.use_smooth = True
+    for pname in (opt('--poses', 'bind,idle,wave,tpose,armsup,forward,yawL,twist,lean,shrug')).split(','):
+        RV.pose(arm, pname)
+        for vname, az in (('front', 0), ('q', -40)):
+            RV.snap(cam, f'{PREVIEW}-{pname}-{vname}.png', az, (0, 0, 1.45), 4.2)
+        # 왼팔(+x) 확대: 어깨~손목 가운데를 본다
+        c = (arm.pose.bones['shoulder_L'].tail + arm.pose.bones['hand_L'].head) / 2
+        RV.snap(cam, f'{PREVIEW}-{pname}-arm.png', -20, c, 2.2)
+        RV.snap(cam, f'{PREVIEW}-{pname}-side.png', 90, (0, 0, 1.45), 4.2)
+    log('preview done')
