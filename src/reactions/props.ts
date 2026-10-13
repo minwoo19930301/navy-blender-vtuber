@@ -5,7 +5,7 @@
  * - 노트북은 씬(fxRoot 의 부모)에 얹는다. fxRoot 는 공 캐릭터용 배율·높이가 걸려 있어서 자식으로 두지 않는다.
  * - 헤드폰·노트북은 평소(idle)에 보이지 않는다. 리액션 레이어 10 이 살아 있는 동안만 보이고, 등장·퇴장은 tl 만의 순수 함수라 시각을 건너뛰어도 같은 모습이다.
  * - 책상('desk')은 idle 에 깊이만 쓰는 투명 가림판이다: 밑단·바지를 가리지만 투명 오버레이에서는 안 보인다.
- *   일하는 척 동안만 나무 책상이 서서히 나타난다. 키보드('keyboard')는 idle 에 보이고, 일하는 척 동안 노트북에 자리를 내주고 줄어 사라진다.
+ *   일하는 척 동안만 나무 책상이 서서히 나타난다. 키보드('keyboard')는 쓰지 않는다 (책상 없이 떠 보인다).
  * - 모델·씬은 엔진이 모른다: 처음 update 때 fxRoot.parent 에서 'anchor_headTop' 을 이름으로 찾아 붙인다 (아직 없으면 다음 프레임에 다시).
  */
 import * as THREE from 'three'
@@ -206,9 +206,8 @@ export function createWorkProps(fxRoot: THREE.Object3D): WorkProps {
         deskMat.opacity = work
         deskMat.depthWrite = work > 0.98
       }
-      const ks = 1 - ss(0, 0.8, work)
-      kbRoot.visible = attachedDesk && ks > 0.002
-      if (kbRoot.visible) kbRoot.scale.setScalar(ks)
+      // 키보드는 책상 없이 떠 보여서(투명 오버레이에선 '책상 줄'처럼 보인다) 쓰지 않는다
+      kbRoot.visible = false
     },
     dispose() {
       for (const g of [headPivot, lapRoot, deskRoot, kbRoot]) {

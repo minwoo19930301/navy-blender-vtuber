@@ -122,20 +122,24 @@ function setAvatarZoom(z: number) {
   frameCamera()
 }
 
+/** 책상 윗면 높이와 앞 모서리 z (props.glb 의 desk). 화면 아래 가장자리를 여기에 맞춘다 */
+const DESK_Y = 0.28, DESK_FRONT_Z = 1.5
+
 function frameCamera() {
   const w = Math.max(1, window.innerWidth)
   const h = Math.max(1, window.innerHeight)
   renderer.setSize(w, h, true)
   camera.aspect = w / h
   const bodyH = Math.max(0.5, avatar.height || 1.0)
-  // Upper-body framing includes overhead gestures.
-  const lookY = bodyH * 0.50
   const fitH = bodyH * 1.16 * avatarZoom
   const fitW = bodyH * 1.12 * avatarZoom
   const halfFov = THREE.MathUtils.degToRad(camera.fov / 2)
   const distH = fitH / 2 / Math.tan(halfFov)
   const distW = fitW / 2 / (Math.tan(halfFov) * camera.aspect)
   const dist = Math.max(distH, distW)
+  // 화면 아래 가장자리를 책상(투명 가림판) 앞 모서리에 맞춘다: 몸이 잘린 선이 창 밖으로 나가서 '책상 줄'이 안 보인다.
+  // 가림판 앞 모서리(y=DESK_Y, z=DESK_FRONT_Z)가 화면 맨 아래에 오도록 바라보는 높이를 정한다 (src/reactions/props.ts, blender/props_export.py)
+  const lookY = DESK_Y + (dist - DESK_FRONT_Z) * Math.tan(halfFov)
   camera.position.set(0, lookY, dist)
   camera.lookAt(0, lookY, 0)
   camera.far = Math.max(100, dist * 10)

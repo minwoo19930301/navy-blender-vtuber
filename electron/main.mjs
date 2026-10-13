@@ -156,7 +156,7 @@ function createWindow() {
         writeFileSync(smokeShot, img.toPNG())
         console.log(`[navy] smoke shot → ${smokeShot} (${img.getSize().width}x${img.getSize().height})`)
         app.quit()
-      }, 2500)
+      }, Number(process.env.NAVY_SMOKE_DELAY ?? 2500)) // 모델(GLB)·얼굴 준비가 늦으면 NAVY_SMOKE_DELAY 로 늘린다
     })
   }
 
