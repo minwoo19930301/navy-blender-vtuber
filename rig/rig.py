@@ -299,6 +299,16 @@ if '--baked-face' in argv and F:
     _found = MO.smile_curve_from_texture(body, _mc, _mw, _mi, log)
     _curve, _xr = MO.rip(body, _cl, _cr, _lip, _mc, _mw, log, found=_found)
     MOUTH = dict(curve=_curve, xr=_xr, center=_mc, mw=_mw, chin_z=joint(*F[152][:2], depth_bias=0.5).z)
+
+# ───────────────────────── 3-2. 옆머리·눈 다듬기 (rig/hairtrim.py, 사용자 요청)
+import hairtrim as HT  # noqa: E402
+if '--baked-face' in argv and F:
+    _eR = (joint(*F[133][:2], depth_bias=0.5) + joint(*F[33][:2], depth_bias=0.5)) / 2   # 캐릭터 오른눈 (화면 왼쪽)
+    _eL = (joint(*F[362][:2], depth_bias=0.5) + joint(*F[263][:2], depth_bias=0.5)) / 2
+    HT.trim_sideburns(body, (_eR.z + _eL.z) / 2, log)
+    _hw = (joint(*F[133][:2]) - joint(*F[33][:2])).length / 2
+    _hh = max(0.04, (joint(*F[159][:2]) - joint(*F[145][:2])).length / 2)
+    HT.blacken_eye_corner(body, _eR, _hw * 1.15, _hh * 1.3, -1, log)
 bvh = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
 
 # ───────────────────────── 3a. 소매 중심선으로 팔 관절 다듬기
@@ -1181,6 +1191,48 @@ if USE_HAND:
 # 입 속은 텍스처에서 찾은 미소 선 높이에 맞춘다 (랜드마크 입 중심은 만화 얼굴이라 어긋난다)
 cav_objs = MO.add_cavity(bpy, arm, Vector((MOUTH['center'].x, MOUTH['center'].y, float(MOUTH['curve'](MOUTH['center'].x)))), MOUTH['mw'], MOUTH['center'].y, log) if MOUTH else []
 
+# ───────────────────────── 겨드랑이 다리 (사용자: 만세하면 겨드랑이가 비어 보인다)
+# 팔과 몸통 사이를 남색 타원체로 잇는다. 몸 쪽 끝은 chest, 팔 쪽 끝은 upper_arm 을 따라가서 팔을 들면 겨드랑이를 덮으며 늘어난다.
+# 쉼 자세(팔 내림)에서는 팔·몸 속에 묻혀 안 보인다.
+pit_objs = []
+_jn = bpy.data.materials.get('jacket_navy')
+for side, tag in ((1, 'L'), (-1, 'R')):
+    S_ = Vector(J[f'shoulder_{tag}'])
+    E_ = Vector(J[f'elbow_{tag}'])
+    A_ = S_ + Vector((-side * 0.16, 0.0, -0.22))          # 몸통 옆 (가슴 안쪽)
+    B_ = S_ + (E_ - S_).normalized() * 0.30               # 위팔 안쪽
+    ax = (B_ - A_)
+    L_ = ax.length
+    me_p = bpy.data.meshes.new(f'navy_pit_{tag}')
+    ob_p = bpy.data.objects.new(f'navy_pit_{tag}', me_p)
+    bpy.context.scene.collection.objects.link(ob_p)
+    bm_p = bmesh.new()
+    bmesh.ops.create_uvsphere(bm_p, u_segments=20, v_segments=14, radius=1.0)
+    q_ = Vector((0, 0, 1)).rotation_difference(ax.normalized())
+    for v in bm_p.verts:
+        loc = Vector((v.co.x * 0.15, v.co.y * 0.12, v.co.z * (L_ / 2 + 0.06)))
+        v.co = (A_ + B_) / 2 + q_ @ loc
+    bm_p.to_mesh(me_p)
+    bm_p.free()
+    for poly in me_p.polygons:
+        poly.use_smooth = True
+    if _jn:
+        me_p.materials.append(_jn)
+    g_c = ob_p.vertex_groups.new(name='chest')
+    g_s = ob_p.vertex_groups.new(name=f'shoulder_{tag}')
+    g_u = ob_p.vertex_groups.new(name=f'upper_arm_{tag}')
+    for v in me_p.vertices:
+        t = max(0.0, min(1.0, (v.co - A_).dot(ax) / (L_ * L_)))
+        wu = t * t * (3 - 2 * t)
+        g_c.add([v.index], (1 - wu) * 0.7, 'REPLACE')
+        g_s.add([v.index], (1 - wu) * 0.3, 'REPLACE')
+        g_u.add([v.index], wu, 'REPLACE')
+    ob_p.parent = arm
+    mp = ob_p.modifiers.new('Armature', 'ARMATURE')
+    mp.object = arm
+    pit_objs.append(ob_p)
+log(f'armpit bridges: {len(pit_objs)}')
+
 # 재질: 양면 (TRELLIS 면 방향이 다 맞지는 않는다)
 for m in body.data.materials:
     m.use_backface_culling = False
@@ -1287,7 +1339,7 @@ for ob in bpy.context.selected_objects:
     ob.select_set(False)
 arm.select_set(True)
 body.select_set(True)
-for ho in hand_objs + cuff_objs + cav_objs:
+for ho in hand_objs + cuff_objs + cav_objs + pit_objs:
     ho.select_set(True)
 bpy.ops.export_scene.gltf(filepath=str(OUT), export_format='GLB', use_selection=True, export_yup=True,
                           export_skins=True, export_animations=False, export_apply=False, export_extras=False)

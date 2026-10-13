@@ -488,12 +488,19 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
   const bodyE = new T.Euler(0, 0, 0, 'YXZ'), bq = new T.Quaternion()
   const neckQ = new T.Quaternion(), headQ = new T.Quaternion()
 
+  /** 고개 좌우 돌림 중 몸통이 따라 도는 비율 (나머지는 목 35% · 머리 65%) */
+  const BODY_FOLLOW = 0.2
+
   function apply(f: RigFrame, dt: number, t: number) {
     void t
     const body = f.body
     const mo = f.motion
     const k = 0.45
-    const leanX = clamp(body.lean.x, -1, 1), leanZ = clamp(body.lean.z + (1 - clamp(body.present, 0, 1)) * IDLE.leanZ, -1, 1), tw = clamp(body.twist, -1.5, 1.5)
+    // 고개를 돌리면 몸통도 조금(고개의 BODY_FOLLOW 만큼) 따라 돈다. 목이 혼자 다 비틀면 목·깃 사이가 떠 보인다.
+    // 가슴의 비틀기 = tw × k × (spine 0.4 + chest 0.6) = tw × k 이므로 tw 에 yaw × BODY_FOLLOW / k 를 더한다
+    const yawIn = clamp(f.head.yaw, -0.9, 0.9)
+    const bodyYaw = yawIn * BODY_FOLLOW
+    const leanX = clamp(body.lean.x, -1, 1), leanZ = clamp(body.lean.z + (1 - clamp(body.present, 0, 1)) * IDLE.leanZ, -1, 1), tw = clamp(body.twist + bodyYaw / k, -1.5, 1.5)
 
     // 전체: 점프·옆이동·자전·스쿼시·호흡은 scene 자체 변환 (밑단=y0 이 기준점이라 납작해져도 바닥에 붙어 있다)
     const sq = clamp(mo?.squash ?? 0, -1, 1), push = clamp(mo?.push ?? 0, 0, 1)
@@ -520,7 +527,7 @@ function bindRig(root: T.Group, scene: T.Object3D, rigJson: NavyRig | null, hitM
 
     // 고개: 35% 목 / 65% 머리. 캐릭터 축 기준 회전을 토르소 변환으로 감싼다
     // 쉼 자세의 앞숙임은 고개를 살짝 들어 상쇄 (시선은 정면)
-    const py = -clamp(f.head.pitch + (1 - clamp(body.present, 0, 1)) * IDLE.leanZ * k * 0.9, -0.65, 0.65), yw = clamp(f.head.yaw, -0.9, 0.9), rl = -clamp(f.head.roll, -0.5, 0.5)
+    const py = -clamp(f.head.pitch + (1 - clamp(body.present, 0, 1)) * IDLE.leanZ * k * 0.9, -0.65, 0.65), yw = yawIn - bodyYaw, rl = -clamp(f.head.roll, -0.5, 0.5)
     headE.set(py * 0.35, yw * 0.35, rl * 0.35, 'YXZ'); hq.setFromEuler(headE)
     headE.set(py * 0.65, yw * 0.65, rl * 0.65, 'YXZ'); hq2.setFromEuler(headE)
     wrapTorso(hq, hq)
