@@ -17,7 +17,7 @@ bpy.ops.import_scene.gltf(filepath=src)
 objs = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 for o in objs:
     o.rotation_mode = 'XYZ'
-    o.rotation_euler.x += math.radians(-90)  # TRELLIS GLB 는 눕혀서 나온다
+    o.rotation_euler.x += math.radians(float(__import__('os').environ.get('ROTX', '-90')))  # TRELLIS(로컬) GLB 는 눕혀서 나온다. Space GLB 는 ROTX=0
     for m in o.data.materials:
         m.use_backface_culling = False
 bpy.context.view_layer.update()
