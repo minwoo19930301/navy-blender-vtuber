@@ -305,7 +305,7 @@ import hairtrim as HT  # noqa: E402
 if '--baked-face' in argv and F:
     _eR = (joint(*F[133][:2], depth_bias=0.5) + joint(*F[33][:2], depth_bias=0.5)) / 2   # 캐릭터 오른눈 (화면 왼쪽)
     _eL = (joint(*F[362][:2], depth_bias=0.5) + joint(*F[263][:2], depth_bias=0.5)) / 2
-    HT.trim_sideburns(body, (_eR.z + _eL.z) / 2, log)
+    # 옆머리 다듬기(HT.trim_sideburns)는 자른 자리가 얼룩져 보여 되돌렸다 (사용자 요청, 원래 머리 그대로)
     # 왼눈 흰자 칠하기(HT.blacken_eye_corner)는 눈동자가 너무 커 보여 되돌렸다 (사용자 요청).
     # 대신 캐릭터 오른눈(화면 왼쪽, 끝이 파여 보임)을 괜찮은 왼눈의 좌우 반전으로 바꾼다
     _hw = (joint(*F[133][:2]) - joint(*F[33][:2])).length / 2
