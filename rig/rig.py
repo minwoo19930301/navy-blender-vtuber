@@ -1075,12 +1075,77 @@ info = {
 OUT.parent.mkdir(parents=True, exist_ok=True)
 json.dump(info, open(OUT.with_name(OUT.stem + '-rig.json'), 'w'), indent=1)
 
+# ───────────────────────── 소매 끝 말린 단 (cuff)
+# 생성 메시의 소매 끝은 톱니처럼 들쭉날쭉하고 얇은 조각이 손등 위로 늘어진다 → 부드러운 남색 고리로 덮는다.
+# 레퍼런스의 소매 끝도 둥글게 말린 단이다. 아래팔 뼈에 100% 붙인다.
+CUFF_MINOR = 0.03
+cuff_objs = []
+_navy = None
+for tag in ('L', 'R'):
+    E = Vector(J[f'elbow_{tag}'])
+    fa = Vector(cuff_info[tag]['fa']).normalized()
+    t_end = cuff_info[tag]['t_skin'] - CUFF_BACK
+    # 소매 끝 단면 반지름: 그 높이 근처 몸 정점의 축 거리 (바깥 껍질 쪽)
+    co = np.array([v.co[:] for v in body.data.vertices])
+    tt = (co - np.array(E)) @ np.array(fa)
+    rad = np.linalg.norm(co - (np.array(E) + tt[:, None] * np.array(fa)), axis=1)
+    band = (np.abs(tt - t_end) < 0.03) & (rad < 0.35)
+    r_open = float(np.percentile(rad[band], 85)) if band.sum() > 20 else 0.18
+    bm_c = bmesh.new()
+    bmesh.ops.create_cone(bm_c, cap_ends=False, segments=40, radius1=1, radius2=1, depth=1)  # 자리만 잡고 아래에서 다시 만든다
+    bm_c.free()
+    me_c = bpy.data.meshes.new(f'navy_cuff_{tag}')
+    ob_c = bpy.data.objects.new(f'navy_cuff_{tag}', me_c)
+    bpy.context.scene.collection.objects.link(ob_c)
+    bm_c = bmesh.new()
+    # 도넛: 큰 반지름 = 소매 안쪽, 작은 반지름 = 말린 두께. 축 방향으로 조금 납작하게
+    NU, NV = 40, 14
+    q = fa.to_track_quat('Z', 'Y')
+    # 소매 끝보다 조금 안쪽에 두고, 벌어진 끝단 반지름보다 작게 (밖으로 고리가 튀어나오면 훌라후프처럼 보인다)
+    center = E + fa * (t_end - 0.03)
+    R_maj = r_open * 0.8
+    rows = []
+    for i in range(NU):
+        a_ = 2 * math.pi * i / NU
+        row = []
+        for j in range(NV):
+            b_ = 2 * math.pi * j / NV
+            rr = R_maj + CUFF_MINOR * math.cos(b_)
+            local = Vector((rr * math.cos(a_), rr * math.sin(a_), CUFF_MINOR * 0.8 * math.sin(b_)))
+            row.append(bm_c.verts.new(center + q @ local))
+        rows.append(row)
+    for i in range(NU):
+        for j in range(NV):
+            a1, b1 = rows[i][j], rows[(i + 1) % NU][j]
+            c1, d1 = rows[(i + 1) % NU][(j + 1) % NV], rows[i][(j + 1) % NV]
+            bm_c.faces.new((a1, b1, c1, d1))
+    bmesh.ops.recalc_face_normals(bm_c, faces=bm_c.faces)
+    bm_c.to_mesh(me_c)
+    bm_c.free()
+    for poly in me_c.polygons:
+        poly.use_smooth = True
+    if _navy is None:
+        _navy = bpy.data.materials.new('navy_cuff')
+        _navy.use_nodes = True
+        # 재킷 남색 (sRGB 0.153,0.165,0.251 → 선형)
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (0.150, 0.162, 0.248)]
+        _navy.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value = (*lin, 1)
+        _navy.node_tree.nodes['Principled BSDF'].inputs['Roughness'].default_value = 0.85
+    me_c.materials.append(_navy)
+    vg = ob_c.vertex_groups.new(name=f'forearm_{tag}')
+    vg.add(list(range(len(me_c.vertices))), 1.0, 'REPLACE')
+    ob_c.parent = arm
+    mod_c = ob_c.modifiers.new('Armature', 'ARMATURE')
+    mod_c.object = arm
+    cuff_objs.append(ob_c)
+    log(f'cuff ring {tag}: r_open={r_open:.3f} at t={t_end:.3f}')
+
 # ───────────────────────── 내보내기
 for ob in bpy.context.selected_objects:
     ob.select_set(False)
 arm.select_set(True)
 body.select_set(True)
-for ho in hand_objs:
+for ho in hand_objs + cuff_objs:
     ho.select_set(True)
 bpy.ops.export_scene.gltf(filepath=str(OUT), export_format='GLB', use_selection=True, export_yup=True,
                           export_skins=True, export_animations=False, export_apply=False, export_extras=False)

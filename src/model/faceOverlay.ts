@@ -541,7 +541,7 @@ function drawEye(p: Patch, eye: EyeShape, st: EyeState, debug: boolean, baked = 
   p.tex.needsUpdate = true
 }
 
-interface MouthState { open: number; smile: number; kiss: number; alpha: number; rest: number }
+interface MouthState { open: number; smile: number; kiss: number; alpha: number; rest: number; baked?: boolean }
 
 /** 입이 닫혀 있을 때의 미소 호(∪) 폭 = 눈 사이 거리 x 0.55, 처짐 = 폭 x 0.18 */
 const SMILE_W = 0.55, SMILE_SAG = 0.18, SMILE_COL = '#a45c48'
@@ -601,7 +601,8 @@ function drawMouth(p: Patch, ox: number, oy: number, mw: number, eyeDist: number
   }
   if (st.alpha > 0.01) {
     const o = st.open, sm = st.smile
-    const W = mw * clamp(0.36 + 0.26 * o + 0.1 * sm, 0.3, 0.82)
+    // 구운 얼굴은 입술(구운 미소 선)이 넓어서, 그보다 좁으면 입이 작아 보인다 → 입술 폭에 가깝게 벌린다
+    const W = st.baked ? mw * clamp(0.72 + 0.22 * o + 0.08 * sm, 0.62, 1.0) : mw * clamp(0.36 + 0.26 * o + 0.1 * sm, 0.3, 0.82)
     const H = 0.012 + o * 0.15
     const lift = 0.016 * sm + 0.006
     const y0 = 0.002
@@ -761,7 +762,9 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
       archFx += ((happy ? 1 : 0) - archFx) * k
       heartFx += ((fx.heart ? 1 : 0) - heartFx) * k
       // 눈
-      const lidL = Math.max(clamp(f.blinkL, 0, 1), closeFx), lidR = Math.max(clamp(f.blinkR, 0, 1), closeFx)
+      // 구운 얼굴은 트래킹의 작은 깜빡임 값(실눈·조명 탓 0.1~0.25)에도 눈꺼풀이 내려와 졸려 보인다 → 0.22 아래는 무시하고 그 위를 늘려 쓴다
+      const lidIn = (v: number) => baked ? smooth(0.22, 0.8, clamp(v, 0, 1)) : clamp(v, 0, 1)
+      const lidL = Math.max(lidIn(f.blinkL), closeFx), lidR = Math.max(lidIn(f.blinkR), closeFx)
       const heart = heartFx
       // 눈동자: 고개 방향으로 조금 더 흘끗 + 트래킹 gaze (눈 반폭의 ±0.15)
       gazeS += (clamp(f.head.yaw * 0.22 + f.gaze.x * 0.1, -0.15, 0.15) - gazeS) * k
@@ -793,7 +796,7 @@ export function createFaceOverlay(head: T.Bone, rig: NavyRig): { root: T.Object3
         patchM.mesh.visible = vis
         if (vis) {
           // 패치 중심은 입 중심보다 mOffY 아래라서 그리기 원점을 위로 옮긴다
-          drawMouth(patchM, 0, mOffY, mw, eyeDist, mSkinTop, mSkinBot, { open: openS, smile: smileS, kiss: kissS, alpha, rest })
+          drawMouth(patchM, 0, mOffY, mw, eyeDist, mSkinTop, mSkinBot, { open: openS, smile: smileS, kiss: kissS, alpha, rest, baked })
         }
       }
       // 볼터치

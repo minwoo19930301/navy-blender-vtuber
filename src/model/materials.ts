@@ -18,7 +18,8 @@ export function createBodyMaterial(src: T.Material): T.Material {
   const m = new T.MeshStandardMaterial({
     name: s.name || 'navy_body',
     map: s.map ?? null,
-    color: 0xffffff,
+    // 텍스처 없는 재질(소매 단 등)은 GLB 의 기본색을 그대로 쓴다
+    color: s.map ? 0xffffff : (s.color?.clone() ?? new T.Color(0xffffff)),
     roughness: 0.82,
     metalness: 0,
     side,
