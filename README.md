@@ -41,12 +41,14 @@ npm run app
 1. 레퍼런스 프레임을 FLUX.2 klein(mflux, 로컬)으로 팔을 벌린 A자 자세 이미지로 바꿨습니다 (`trellis/apose-s1.png`).
 2. TRELLIS.2 Apple Silicon 포트(trellis-mac, 로컬)로 몸 전체를 3D로 만들었습니다. 텍스처 굽기 버그를 고쳐 다시 구웠습니다 (`trellis/rebake.py`).
 3. 얼굴은 레퍼런스 프레임에서 바로 만든 모델이 더 닮아서 그 머리를 몸에 이식했습니다 (`rig/headswap.py`).
-4. `rig/rig.py` 가 뼈대(손가락 15개씩, 턱·윗입술 포함)와 절차 가중치를 넣고 `public/navy.glb` 로 내보냅니다.
+4. `rig/rig.py` 가 뼈대(45개: 손가락 15개씩, 턱·윗입술 포함)와 절차 가중치를 넣고 `public/navy.glb` 로 내보냅니다.
    생성된 손은 손가락이 붙어 있어서 따로 만든 손(`rig/hand/`)으로 바꿨습니다.
    재킷·셔츠는 생성 텍스처의 노이즈 때문에 단색 재질로 바꿨습니다.
 5. 입은 구운 미소 선을 따라 메시를 갈라 턱 뼈로 엽니다 (`rig/mouth.py`). 깜빡임은 `src/model/faceOverlay.ts` 가 덧그립니다.
 
-모델 다시 만들기:
+처음부터 따라 만드는 전체 명령과 잘 안 됐던 것들은 [docs/HOW-TO-BUILD.md](docs/HOW-TO-BUILD.md) 에 있습니다.
+
+모델 다시 만들기 (리깅만):
 
 ```sh
 /Applications/Blender.app/Contents/MacOS/Blender --background --python rig/rig.py -- trellis/body-swap.glb public/navy.glb --baked-face

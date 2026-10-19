@@ -1,0 +1,115 @@
+diff --git a/backends/texture_baker.py b/backends/texture_baker.py
+index f1a1742..bbb08c2 100644
+--- a/backends/texture_baker.py
++++ b/backends/texture_baker.py
+@@ -14,7 +14,7 @@ import numpy as np
+ import time
+ 
+ 
+-def uv_unwrap(vertices, faces):
++def uv_unwrap(vertices, faces, texture_size=2048, padding=4):
+     """
+     Compute UV coordinates for a mesh using xatlas.
+ 
+@@ -29,7 +29,15 @@ def uv_unwrap(vertices, faces):
+     v = np.ascontiguousarray(vertices.astype(np.float32))
+     f = np.ascontiguousarray(faces.astype(np.uint32))
+ 
+-    vmapping, indices, uvs = xatlas.parametrize(v, f)
++    # 로컬 수정: 기본 parametrize 는 차트 사이 여백이 없어 이중선형 샘플링이 옆 차트·빈 텍셀을 읽는다
++    atlas = xatlas.Atlas()
++    atlas.add_mesh(v, f)
++    po = xatlas.PackOptions()
++    po.padding = padding
++    po.resolution = texture_size
++    po.bilinear = True
++    atlas.generate(pack_options=po)
++    vmapping, indices, uvs = atlas[0]
+ 
+     new_vertices = v[vmapping]
+     new_faces = indices.reshape(-1, 3)
+@@ -57,16 +65,19 @@ def _rasterize_uv_triangles(vertices, faces, uvs, texture_size):
+     mask = np.zeros((H, W), dtype=bool)
+ 
+     n_faces = len(faces)
+-    uv_scale = np.array([W - 1, H - 1], dtype=np.float32)
++    # 로컬 수정: 텍셀 중심 정렬(-0.5)과 v 방향. trimesh 는 GLB 로 낼 때 v 를 1-v 로 뒤집으므로
++    # 이미지 행은 (1-v)*H 로 잡아야 렌더러가 읽는 자리와 맞는다 (원래 코드는 행=v 라 차트마다 상하가 뒤집혀 노이즈처럼 보였다)
++    def to_px(uv):
++        return np.array([uv[0] * W - 0.5, (1.0 - uv[1]) * H - 0.5], dtype=np.float32)
+ 
+     for fi in range(n_faces):
+         if fi > 0 and fi % 100000 == 0:
+             print(f"    Rasterizing: {fi:,}/{n_faces:,}")
+ 
+         i0, i1, i2 = faces[fi]
+-        uv0 = uvs[i0] * uv_scale
+-        uv1 = uvs[i1] * uv_scale
+-        uv2 = uvs[i2] * uv_scale
++        uv0 = to_px(uvs[i0])
++        uv1 = to_px(uvs[i1])
++        uv2 = to_px(uvs[i2])
+         p0, p1, p2 = vertices[i0], vertices[i1], vertices[i2]
+ 
+         min_x = max(int(np.floor(min(uv0[0], uv1[0], uv2[0]))), 0)
+@@ -218,8 +229,20 @@ def bake_texture(vertices, faces, uvs, voxel_coords, voxel_attrs, origin, voxel_
+             channel[unfilled] = blurred[unfilled]
+         current_mask = dilated
+ 
+-    # Gamma correction: linear -> sRGB
+-    base_color = np.power(np.clip(base_color, 0, 1), 1.0 / 2.2)
++    # 로컬 수정: 팽창 뒤에도 남은 빈 텍셀은 가장 가까운 유효 텍셀 색으로 채운다 (차트 경계의 검은 점 방지)
++    from scipy.ndimage import distance_transform_edt
++    if not current_mask.all():
++        _, (iy, ix) = distance_transform_edt(~valid_mask, return_indices=True)
++        fill = ~current_mask
++        base_color[fill] = base_color[iy[fill], ix[fill]]
++        metallic[fill] = metallic[iy[fill], ix[fill]]
++        roughness[fill] = roughness[iy[fill], ix[fill]]
++        current_mask = np.ones_like(current_mask)
++
++    # 로컬 수정: TRELLIS.2 복셀 색은 이미 표시용(sRGB) 값이다. 공식 o_voxel.postprocess.to_glb 도 감마 없이 *255 만 한다.
++    # 여기서 1/2.2 를 또 걸면 색이 밝고 바래 보인다 → 기본은 끄고 필요할 때만 켠다
++    if kwargs.get('gamma', False):
++        base_color = np.power(np.clip(base_color, 0, 1), 1.0 / 2.2)
+ 
+     base_color_img = (base_color * 255).astype(np.uint8)
+ 
+diff --git a/generate.py b/generate.py
+index b3f6718..38b40c1 100644
+--- a/generate.py
++++ b/generate.py
+@@ -59,6 +59,10 @@ def main():
+         "--no-texture", action="store_true",
+         help="Skip texture baking, export geometry only",
+     )
++    parser.add_argument(
++        "--bake-faces", type=int, default=200000,
++        help="(local) Simplify to this many faces before UV unwrap/bake. xatlas takes ~40 min at 200K",
++    )
+     parser.add_argument(
+         "--steps", type=int, default=None,
+         help="Override sampler steps for all three flow phases (default: pipeline JSON, usually 12)",
+@@ -251,7 +255,7 @@ def main():
+ 
+             # Simplify before UV unwrap — xatlas is very slow on 800K+ vertex meshes
+             bake_verts, bake_faces = verts, faces
+-            target_faces = min(200000, len(faces))
++            target_faces = min(args.bake_faces, len(faces))
+             if len(faces) > target_faces:
+                 try:
+                     import fast_simplification
+@@ -261,8 +265,12 @@ def main():
+                 except ImportError:
+                     print(f"  Warning: fast_simplification not installed, UV unwrapping full mesh (slow)")
+ 
++            # 로컬 수정: 다시 굽기용으로 복셀 색 데이터와 메시를 저장한다 (생성 없이 굽기만 반복할 수 있게)
++            np.savez_compressed(f"{args.output}_bake.npz", verts=np.asarray(verts), faces=np.asarray(faces),
++                                bake_verts=np.asarray(bake_verts), bake_faces=np.asarray(bake_faces),
++                                coords=voxel_coords.numpy(), attrs=voxel_attrs.numpy(), origin=origin.numpy(), voxel_size=np.float32(vs))
+             print("  UV unwrapping with xatlas...")
+-            new_verts, new_faces, uvs, vmapping = uv_unwrap(bake_verts, bake_faces)
++            new_verts, new_faces, uvs, vmapping = uv_unwrap(bake_verts, bake_faces, texture_size=tex_size)
+             print(f"  UV unwrap: {len(verts):,} -> {len(new_verts):,} vertices")
+ 
+             base_color_img, mr_img, mask = bake_texture(
